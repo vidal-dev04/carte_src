@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx --yes create-next-app@latest . --typescript --tailwind --eslint --app --src-dir --import-alias \"@/*\" --use-npm --disable-git --yes)",
+      "Bash(npm install *)",
+      "Bash(curl -sL -o /Users/teclekyvidal/Documents/carte-src/public/textures/earth-blue-marble.jpg https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg)",
+      "Bash(curl -sL -o /Users/teclekyvidal/Documents/carte-src/public/textures/night-sky.png https://unpkg.com/three-globe/example/img/night-sky.png)",
+      "Bash(curl -sL -o /Users/teclekyvidal/Documents/carte-src/public/textures/earth-topology.png https://unpkg.com/three-globe/example/img/earth-topology.png)",
+      "Bash(curl -sL -o /Users/teclekyvidal/Documents/carte-src/public/data/countries.geojson https://raw.githubusercontent.com/vasturiano/react-globe.gl/master/example/datasets/ne_110m_admin_0_countries.geojson)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.dependencies\\)\\); console.log\\(p.devDependencies.tailwindcss ? 'tw:'+p.devDependencies.tailwindcss : Object.keys\\(p.devDependencies\\).join\\(','\\)\\)\")",
+      "Bash(npm run *)",
+      "Bash(chromium-cli --session app)",
+      "Read(//Applications/**)",
+      "Bash(node -e \"try{console.log\\('playwright-core', require.resolve\\('playwright-core'\\)\\)}catch\\(e\\){console.log\\('no playwright-core'\\)}\")",
+      "Bash(npm ls *)",
+      "Bash(npm init *)",
+      "Bash(node drive.js)",
+      "Bash(ps -p 99958 -o pid,comm,args)",
+      "Bash(curl -sf http://localhost:3001)",
+      "Bash(node responsive.js)",
+      "Bash(sed -i '' \"s|page.click\\(\\\\\"text=Côte d'Ivoire\\\\\"\\)|page.locator\\(\\\\\"text=Côte d'Ivoire\\\\\"\\).locator\\(\\\\\"visible=true\\\\\"\\).first\\(\\).click\\(\\)|; s|page.click\\(\\\\\"text=Vue globale\\\\\"\\)|page.locator\\(\\\\\"text=Vue globale\\\\\"\\).locator\\(\\\\\"visible=true\\\\\"\\).first\\(\\).click\\(\\)|\" responsive.js)"
+    ]
+  }
+}

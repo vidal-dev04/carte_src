@@ -1,16 +1,23 @@
 "use client";
 
 import Image from "next/image";
-import { COUNTRIES, Country, TOTAL_PEOPLE, getStatus } from "@/data/countries";
+import { City, COUNTRIES, Country, TOTAL_PEOPLE, getStatus } from "@/data/countries";
 import CountryCard from "./CountryCard";
 import Legend from "./Legend";
 
 type SidebarProps = {
   selected: Country | null;
+  selectedCity: City | null;
   onSelect: (country: Country | null) => void;
+  onSelectCity: (city: City | null) => void;
 };
 
-export default function Sidebar({ selected, onSelect }: SidebarProps) {
+export default function Sidebar({
+  selected,
+  selectedCity,
+  onSelect,
+  onSelectCity,
+}: SidebarProps) {
   const sorted = [...COUNTRIES].sort((a, b) => b.people - a.people);
   const selectedStatus = selected ? getStatus(selected.people) : null;
 
@@ -58,6 +65,51 @@ export default function Sidebar({ selected, onSelect }: SidebarProps) {
             {selected.name} — {selectedStatus.label}
           </p>
           <p className="mt-1 text-white/75">{selectedStatus.message}</p>
+
+          {/* Détail par ville — cliquer zoome sur la ville */}
+          <ul className="mt-2 space-y-0.5 border-t border-white/10 pt-2">
+            {[...selected.cities]
+              .sort((a, b) => b.people - a.people)
+              .map((city) => {
+                const cityStatus = getStatus(city.people);
+                const isActive = selectedCity?.name === city.name;
+                return (
+                  <li key={city.name}>
+                    <button
+                      onClick={() => onSelectCity(isActive ? null : city)}
+                      className={`flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-xs transition-colors ${
+                        isActive ? "bg-white/15" : "hover:bg-white/10"
+                      }`}
+                    >
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-full"
+                        style={{
+                          backgroundColor: cityStatus.color,
+                          boxShadow: `0 0 6px ${cityStatus.color}`,
+                        }}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-left text-white/90">
+                        {city.name}
+                        {isActive && <span className="ml-1 text-white/50">🔍</span>}
+                      </span>
+                      <span
+                        className="hidden shrink-0 text-[10px] lg:inline"
+                        style={{ color: cityStatus.color }}
+                      >
+                        {cityStatus.label}
+                      </span>
+                      <span
+                        className="shrink-0 font-bold"
+                        style={{ color: cityStatus.color }}
+                      >
+                        {city.people}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+          </ul>
+
           <button
             onClick={() => onSelect(null)}
             className="mt-2 rounded-lg border border-white/20 px-3 py-1 text-xs text-white/80 transition-colors hover:bg-white/10"

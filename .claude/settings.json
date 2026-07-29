@@ -18,7 +18,10 @@
       "Bash(ps -p 99958 -o pid,comm,args)",
       "Bash(curl -sf http://localhost:3001)",
       "Bash(node responsive.js)",
-      "Bash(sed -i '' \"s|page.click\\(\\\\\"text=Côte d'Ivoire\\\\\"\\)|page.locator\\(\\\\\"text=Côte d'Ivoire\\\\\"\\).locator\\(\\\\\"visible=true\\\\\"\\).first\\(\\).click\\(\\)|; s|page.click\\(\\\\\"text=Vue globale\\\\\"\\)|page.locator\\(\\\\\"text=Vue globale\\\\\"\\).locator\\(\\\\\"visible=true\\\\\"\\).first\\(\\).click\\(\\)|\" responsive.js)"
+      "Bash(sed -i '' \"s|page.click\\(\\\\\"text=Côte d'Ivoire\\\\\"\\)|page.locator\\(\\\\\"text=Côte d'Ivoire\\\\\"\\).locator\\(\\\\\"visible=true\\\\\"\\).first\\(\\).click\\(\\)|; s|page.click\\(\\\\\"text=Vue globale\\\\\"\\)|page.locator\\(\\\\\"text=Vue globale\\\\\"\\).locator\\(\\\\\"visible=true\\\\\"\\).first\\(\\).click\\(\\)|\" responsive.js)",
+      "Bash(node -e ' *)",
+      "Bash(node -e \"console.log\\('globe.gl:', require\\('globe.gl/package.json'\\).version\\)\")",
+      "Bash(awk 'NR>=1 && /CSS2DRenderer/ {print NR}' node_modules/globe.gl/dist/globe.gl.mjs)"
     ]
   }
 }

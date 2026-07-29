@@ -6,7 +6,7 @@ import { useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import Legend from "@/components/Legend";
 import CountryCard from "@/components/CountryCard";
-import { COUNTRIES, Country, TOTAL_PEOPLE, getStatus } from "@/data/countries";
+import { City, COUNTRIES, Country, TOTAL_PEOPLE, getStatus } from "@/data/countries";
 
 // Le globe utilise WebGL : chargement côté client uniquement
 const GlobeView = dynamic(() => import("@/components/GlobeView"), {
@@ -20,9 +20,16 @@ const GlobeView = dynamic(() => import("@/components/GlobeView"), {
 
 export default function Home() {
   const [selected, setSelected] = useState<Country | null>(null);
+  const [selectedCity, setSelectedCity] = useState<City | null>(null);
   const [showLegend, setShowLegend] = useState(false);
   const sorted = [...COUNTRIES].sort((a, b) => b.people - a.people);
   const selectedStatus = selected ? getStatus(selected.people) : null;
+
+  // Changer de pays (ou revenir à la vue globale) désélectionne la ville
+  const selectCountry = (country: Country | null) => {
+    setSelected(country);
+    setSelectedCity(null);
+  };
 
   return (
     <main className="flex h-dvh flex-col overflow-hidden bg-[#02060f] md:flex-row">
@@ -51,10 +58,20 @@ export default function Home() {
       </header>
 
       {/* Sidebar — tablette et desktop */}
-      <Sidebar selected={selected} onSelect={setSelected} />
+      <Sidebar
+        selected={selected}
+        selectedCity={selectedCity}
+        onSelect={selectCountry}
+        onSelectCity={setSelectedCity}
+      />
 
       <section className="relative min-h-0 flex-1">
-        <GlobeView selected={selected} onSelect={setSelected} />
+        <GlobeView
+          selected={selected}
+          selectedCity={selectedCity}
+          onSelect={selectCountry}
+          onSelectCity={setSelectedCity}
+        />
 
         {/* Bouton légende — mobile */}
         <button
@@ -86,8 +103,34 @@ export default function Home() {
               {selected.name} — {selectedStatus.label}
             </p>
             <p className="mt-0.5 text-white/75">{selectedStatus.message}</p>
+            <div className="mt-1.5 flex max-h-20 flex-wrap gap-1.5 overflow-y-auto border-t border-white/10 pt-1.5">
+              {[...selected.cities]
+                .sort((a, b) => b.people - a.people)
+                .map((city) => {
+                  const cityStatus = getStatus(city.people);
+                  const isActive = selectedCity?.name === city.name;
+                  return (
+                    <button
+                      key={city.name}
+                      onClick={() => setSelectedCity(isActive ? null : city)}
+                      className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold text-white/90"
+                      style={{
+                        borderColor: isActive ? cityStatus.color : `${cityStatus.color}88`,
+                        backgroundColor: isActive ? `${cityStatus.color}40` : "transparent",
+                      }}
+                    >
+                      <span
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{ backgroundColor: cityStatus.color }}
+                      />
+                      {city.name}
+                      <span style={{ color: cityStatus.color }}>{city.people}</span>
+                    </button>
+                  );
+                })}
+            </div>
             <button
-              onClick={() => setSelected(null)}
+              onClick={() => selectCountry(null)}
               className="mt-1.5 rounded-lg border border-white/20 px-2.5 py-1 text-[11px] text-white/80"
             >
               ← Vue globale
@@ -104,14 +147,18 @@ export default function Home() {
               compact
               selected={selected?.id === country.id}
               onClick={() =>
-                setSelected(selected?.id === country.id ? null : country)
+                selectCountry(selected?.id === country.id ? null : country)
               }
             />
           ))}
         </div>
 
         <p className="pointer-events-none absolute bottom-3 left-1/2 hidden -translate-x-1/2 text-xs text-white/40 md:block">
-          Faites glisser pour explorer • Cliquez sur un pays coloré pour zoomer
+          Faites glisser pour explorer • Cliquez sur un pays, puis sur une ville pour zoomer
+        </p>
+
+        <p className="pointer-events-none absolute right-2 bottom-0.5 z-10 text-[9px] text-white/35">
+          Imagerie © Esri, Maxar, Earthstar Geographics
         </p>
       </section>
     </main>

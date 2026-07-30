@@ -1,13 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  COUNTRIES,
-  Country,
-  STATUSES,
-  TOTAL_PEOPLE,
-  getStatus,
-} from "@/data/countries";
+import { COUNTRIES, STATUSES, TOTAL_PEOPLE, getStatus } from "@/data/countries";
 
 type Ring = [number, number][];
 type Feature = {
@@ -73,25 +67,96 @@ function pathOf(rings: Ring[], proj: (lng: number, lat: number) => [number, numb
 }
 
 /** Épingle de carte avec étiquette « Nom · effectif » */
-function Pin({
-  x,
-  y,
-  label,
-  people,
-  color,
-  size = 30,
-}: {
+/** Largeur approximative d'un texte en Helvetica */
+function textWidth(text: string, size: number, bold = false) {
+  return text.length * size * (bold ? 0.62 : 0.53);
+}
+
+type PinItem = {
+  key: string;
   x: number;
   y: number;
   label: string;
   people: number;
   color: string;
-  size?: number;
-}) {
-  const text = `${label} · ${people}`;
-  const chipW = text.length * 7.4 + 22;
+  size: number;
+};
+type PlacedPin = PinItem & { chipX: number; chipY: number; chipW: number; moved: boolean };
+
+const CHIP_H = 24;
+
+/**
+ * Place les étiquettes en évitant qu'elles se chevauchent entre elles
+ * ou qu'elles recouvrent une épingle (cas France / Belgique, très proches).
+ * Une étiquette déplacée est reliée à son épingle par un trait.
+ */
+function layoutPins(items: PinItem[]): PlacedPin[] {
+  type Rect = { x: number; y: number; w: number; h: number };
+  const overlaps = (a: Rect, b: Rect) =>
+    a.x < b.x + b.w + 6 &&
+    a.x + a.w + 6 > b.x &&
+    a.y < b.y + b.h + 4 &&
+    a.y + a.h + 4 > b.y;
+
+  // Les épingles elles-mêmes sont des obstacles
+  const taken: Rect[] = items.map((it) => ({
+    x: it.x - it.size / 2,
+    y: it.y - it.size * 1.25,
+    w: it.size,
+    h: it.size * 1.25,
+  }));
+
+  return [...items]
+    .sort((a, b) => a.y - b.y)
+    .map((item) => {
+      const chipW = textWidth(`${item.label} · ${item.people}`, 13.5, true) + 22;
+      const side = chipW / 2 + 16;
+      const candidates: [number, number][] = [
+        [0, 6],
+        [0, 36],
+        [0, -46],
+        [side, -8],
+        [-side, -8],
+        [side, 20],
+        [-side, 20],
+        [0, 66],
+        [0, -76],
+        [side, -40],
+        [-side, -40],
+        [0, 96],
+      ];
+      const fit =
+        candidates.find(
+          ([dx, dy]) =>
+            !taken.some((t) =>
+              overlaps(
+                { x: item.x - chipW / 2 + dx, y: item.y + dy, w: chipW, h: CHIP_H },
+                t
+              )
+            )
+        ) ?? candidates[0];
+      const chipX = item.x - chipW / 2 + fit[0];
+      const chipY = item.y + fit[1];
+      taken.push({ x: chipX, y: chipY, w: chipW, h: CHIP_H });
+      return { ...item, chipX, chipY, chipW, moved: fit[0] !== 0 || fit[1] !== 6 };
+    });
+}
+
+function Pin({ pin }: { pin: PlacedPin }) {
+  const { x, y, size, color, label, people, chipX, chipY, chipW, moved } = pin;
   return (
     <g>
+      {moved && (
+        <line
+          x1={x}
+          y1={y}
+          x2={chipX + chipW / 2}
+          y2={chipY + CHIP_H / 2}
+          stroke={color}
+          strokeWidth="1.3"
+          strokeOpacity="0.65"
+        />
+      )}
       <g transform={`translate(${x - size / 2}, ${y - size * 1.25}) scale(${size / 24})`}>
         <path
           d="M12 0C5.85 0 1 4.9 1 10.95 1 19.1 12 30 12 30s11-10.9 11-19.05C23 4.9 18.15 0 12 0z"
@@ -102,18 +167,18 @@ function Pin({
         <circle cx="12" cy="10.8" r="4.2" fill="rgba(255,255,255,0.92)" />
       </g>
       <rect
-        x={x - chipW / 2}
-        y={y + 6}
+        x={chipX}
+        y={chipY}
         width={chipW}
-        height={24}
+        height={CHIP_H}
         rx={12}
         fill="rgba(4,10,24,0.92)"
         stroke={color}
         strokeWidth="1.4"
       />
       <text
-        x={x - chipW / 2 + 11}
-        y={y + 22.5}
+        x={chipX + 11}
+        y={chipY + 16.5}
         fontSize="13.5"
         fontWeight="700"
         fill="#ffffff"
@@ -164,10 +229,48 @@ export default function Overview({ initialCountryId, onClose }: OverviewProps) {
     return makeProjection(pts, { l: 16, r: 16, t: 26, b: 9 });
   }, [country]);
 
+  const pins = useMemo(() => {
+    const items: PinItem[] = country
+      ? country.cities.map((city) => {
+          const [x, y] = proj(city.lng, city.lat);
+          return {
+            key: city.name,
+            x,
+            y,
+            label: city.name,
+            people: city.people,
+            color: getStatus(city.people).color,
+            size: 32,
+          };
+        })
+      : COUNTRIES.map((c) => {
+          const [x, y] = proj(c.lng, c.lat);
+          return {
+            key: c.id,
+            x,
+            y,
+            label: c.name,
+            people: c.people,
+            color: getStatus(c.people).color,
+            size: 28,
+          };
+        });
+    return layoutPins(items);
+  }, [country, proj]);
+
   const dateLabel = new Intl.DateTimeFormat("fr-FR", {
     month: "long",
     year: "numeric",
   }).format(new Date());
+
+  // L'encadré du total s'adapte à la longueur du texte pour ne jamais déborder
+  const totalLabel = country ? country.name : "Total dans le monde";
+  const totalValue = String(country ? country.people : TOTAL_PEOPLE);
+  const totalBoxW =
+    textWidth(`${totalLabel} : `, 17) +
+    textWidth(totalValue, 24, true) +
+    textWidth(" personnes", 17) +
+    48;
 
   const downloadPng = () => {
     const svg = svgRef.current;
@@ -237,7 +340,7 @@ export default function Overview({ initialCountryId, onClose }: OverviewProps) {
         </div>
       </div>
 
-      {/* Carte statique */}
+      {/* Carte statique — défilable sur petit écran pour rester lisible */}
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
         <svg
           ref={svgRef}
@@ -245,7 +348,7 @@ export default function Overview({ initialCountryId, onClose }: OverviewProps) {
           width={W}
           height={H}
           viewBox={`0 0 ${W} ${H}`}
-          className="h-auto max-h-full w-full max-w-6xl rounded-2xl border border-white/10"
+          className="h-auto max-h-full w-full max-w-6xl min-w-[720px] shrink-0 rounded-2xl border border-white/10"
           fontFamily="Helvetica, Arial, sans-serif"
         >
           <defs>
@@ -280,36 +383,10 @@ export default function Overview({ initialCountryId, onClose }: OverviewProps) {
             );
           })}
 
-          {/* Épingles */}
-          {country
-            ? country.cities.map((city) => {
-                const [x, y] = proj(city.lng, city.lat);
-                return (
-                  <Pin
-                    key={city.name}
-                    x={x}
-                    y={y}
-                    label={city.name}
-                    people={city.people}
-                    color={getStatus(city.people).color}
-                    size={32}
-                  />
-                );
-              })
-            : COUNTRIES.map((c) => {
-                const [x, y] = proj(c.lng, c.lat);
-                return (
-                  <Pin
-                    key={c.id}
-                    x={x}
-                    y={y}
-                    label={c.name}
-                    people={c.people}
-                    color={getStatus(c.people).color}
-                    size={28}
-                  />
-                );
-              })}
+          {/* Épingles (étiquettes replacées pour ne pas se chevaucher) */}
+          {pins.map((pin) => (
+            <Pin key={pin.key} pin={pin} />
+          ))}
 
           {/* En-tête */}
           <rect width={W} height={112} fill="rgba(4,10,24,0.85)" />
@@ -329,19 +406,25 @@ export default function Overview({ initialCountryId, onClose }: OverviewProps) {
               : `Carte mondiale des effectifs · ${dateLabel}`}
           </text>
           <rect
-            x={W - 320}
+            x={W - 24 - totalBoxW}
             y={30}
-            width={296}
+            width={totalBoxW}
             height={52}
             rx={14}
             fill="rgba(41,171,226,0.16)"
             stroke="rgba(41,171,226,0.5)"
             strokeWidth="1.4"
           />
-          <text x={W - 302} y={62} fontSize="17" fill="#cfe9fb">
-            {country ? country.name : "Total dans le monde"} :{" "}
+          <text
+            x={W - 24 - totalBoxW / 2}
+            y={62}
+            fontSize="17"
+            fill="#cfe9fb"
+            textAnchor="middle"
+          >
+            {totalLabel} :{" "}
             <tspan fontSize="24" fontWeight="800" fill="#4db8ff">
-              {country ? country.people : TOTAL_PEOPLE}
+              {totalValue}
             </tspan>{" "}
             personnes
           </text>

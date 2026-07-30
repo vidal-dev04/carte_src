@@ -38,7 +38,7 @@ export default function Sidebar({
             Sacerdoce Royal
           </h1>
           <p className="text-xs font-medium text-[#f5d84a] italic">
-            Que ton règne vienne !
+            Esprit Saint glorifiant Jésus — Que ton règne vienne !
           </p>
           <p className="mt-1 text-[11px] text-sky-200/60">
             Carte mondiale des effectifs

@@ -6,6 +6,7 @@ import { useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import Legend from "@/components/Legend";
 import CountryCard from "@/components/CountryCard";
+import Overview from "@/components/Overview";
 import { City, COUNTRIES, Country, TOTAL_PEOPLE, getStatus } from "@/data/countries";
 
 // Le globe utilise WebGL : chargement côté client uniquement
@@ -22,6 +23,7 @@ export default function Home() {
   const [selected, setSelected] = useState<Country | null>(null);
   const [selectedCity, setSelectedCity] = useState<City | null>(null);
   const [showLegend, setShowLegend] = useState(false);
+  const [showOverview, setShowOverview] = useState(false);
   const sorted = [...COUNTRIES].sort((a, b) => b.people - a.people);
   const selectedStatus = selected ? getStatus(selected.people) : null;
 
@@ -46,7 +48,7 @@ export default function Home() {
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-sm font-extrabold text-white">Sacerdoce Royal</h1>
           <p className="truncate text-[10px] font-medium text-[#f5d84a] italic">
-            Que ton règne vienne !
+            Esprit Saint glorifiant Jésus — Que ton règne vienne !
           </p>
         </div>
         <div className="shrink-0 rounded-xl border border-[#29ABE2]/30 bg-[#29ABE2]/15 px-3 py-1 text-center">
@@ -73,17 +75,25 @@ export default function Home() {
           onSelectCity={setSelectedCity}
         />
 
-        {/* Bouton légende — mobile */}
-        <button
-          onClick={() => setShowLegend((v) => !v)}
-          className={`absolute top-3 right-3 z-10 rounded-full border px-3 py-1.5 text-xs font-semibold backdrop-blur-md transition-colors md:hidden ${
-            showLegend
-              ? "border-[#29ABE2] bg-[#29ABE2]/25 text-white"
-              : "border-white/20 bg-[#040a18]/80 text-white/85"
-          }`}
-        >
-          Légende
-        </button>
+        {/* Boutons aperçu + légende */}
+        <div className="absolute top-3 right-3 z-10 flex gap-2">
+          <button
+            onClick={() => setShowOverview(true)}
+            className="rounded-full border border-[#f5d84a]/60 bg-[#040a18]/80 px-3 py-1.5 text-xs font-semibold text-[#f5d84a] backdrop-blur-md transition-colors hover:bg-[#f5d84a]/15"
+          >
+            🗺️ Voir l&apos;aperçu
+          </button>
+          <button
+            onClick={() => setShowLegend((v) => !v)}
+            className={`rounded-full border px-3 py-1.5 text-xs font-semibold backdrop-blur-md transition-colors md:hidden ${
+              showLegend
+                ? "border-[#29ABE2] bg-[#29ABE2]/25 text-white"
+                : "border-white/20 bg-[#040a18]/80 text-white/85"
+            }`}
+          >
+            Légende
+          </button>
+        </div>
         {showLegend && (
           <div className="absolute top-13 right-3 z-10 w-64 md:hidden">
             <Legend />
@@ -93,7 +103,7 @@ export default function Home() {
         {/* Message du pays sélectionné — mobile */}
         {selected && selectedStatus && (
           <div
-            className="absolute top-3 right-24 left-3 z-10 rounded-2xl border p-3 text-xs backdrop-blur-md md:hidden"
+            className="absolute top-14 right-3 left-3 z-10 rounded-2xl border p-3 text-xs backdrop-blur-md md:hidden"
             style={{
               borderColor: `${selectedStatus.color}66`,
               backgroundColor: "rgba(4, 10, 24, 0.85)",
@@ -161,6 +171,13 @@ export default function Home() {
           Imagerie © Esri, Maxar, Earthstar Geographics
         </p>
       </section>
+
+      {showOverview && (
+        <Overview
+          initialCountryId={selected?.id ?? null}
+          onClose={() => setShowOverview(false)}
+        />
+      )}
     </main>
   );
 }

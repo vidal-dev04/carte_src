@@ -105,6 +105,9 @@ export default function GlobeView({
   const labelHtml = useMemo(
     () => (feature: object) => {
       const country = (feature as CountryFeature).__country;
+      // Pays déjà sélectionné : pas d'infobulle globale, ce sont les
+      // survols des villes qui donnent le détail
+      if (country.id === selected?.id) return "";
       const status = getStatus(country.people);
       const cityRows = country.cities
         .map((city) => {
@@ -125,7 +128,7 @@ export default function GlobeView({
           <div style="border-top: 1px solid rgba(255,255,255,0.15); margin-top: 6px; padding-top: 3px;">${cityRows}</div>
         </div>`;
     },
-    []
+    [selected]
   );
 
   // Villes du pays sélectionné (nouvelles instances pour que la
@@ -155,15 +158,25 @@ export default function GlobeView({
       const el = document.createElement("div");
       el.style.pointerEvents = "none";
       el.innerHTML = `
-        <div style="display: flex; flex-direction: column; align-items: center; transform: translateY(-6px) scale(${scale}); font-family: inherit;">
-          <div data-hit style="padding: 5px;">
-            <div style="width: 11px; height: 11px; border-radius: 50%; background: ${status.color}; border: 2px solid rgba(255,255,255,0.9); box-shadow: 0 0 10px ${status.color};"></div>
+        <div style="position: relative; display: flex; flex-direction: column; align-items: center; transform: translateY(-2px) scale(${scale}); font-family: inherit;">
+          <div data-tooltip style="display: none; position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); background: rgba(5, 15, 35, 0.94); border: 1px solid ${status.color}; border-radius: 10px; padding: 8px 12px; color: #e8f4fd; white-space: nowrap; pointer-events: none; z-index: 50;">
+            <div style="font-weight: 700; font-size: 13px;">${city.name}</div>
+            <div style="font-size: 12px; margin-top: 2px;">👥 ${city.people} personnes</div>
+            <div style="color: ${status.color}; font-weight: 600; font-size: 11px; margin-top: 4px;">● ${status.label}</div>
+            <div style="font-size: 10.5px; color: rgba(232,244,253,0.75); margin-top: 2px; max-width: 190px; white-space: normal;">${status.message}</div>
           </div>
-          <div data-hit style="background: ${city.__selected ? hexToRgba(status.color, 0.35) : "rgba(4, 10, 24, 0.88)"}; border: ${city.__selected ? 2 : 1}px solid ${status.color}; border-radius: 8px; padding: 3px 8px; font-size: 10.5px; font-weight: 600; color: #fff; white-space: nowrap;">
+          <div data-hit style="padding: 2px 4px 0; filter: drop-shadow(0 0 6px ${status.color}) drop-shadow(0 2px 3px rgba(0,0,0,0.5));">
+            <svg width="${city.__selected ? 30 : 24}" height="${city.__selected ? 38 : 30}" viewBox="0 0 24 30">
+              <path d="M12 0C5.85 0 1 4.9 1 10.95 1 19.1 12 30 12 30s11-10.9 11-19.05C23 4.9 18.15 0 12 0z" fill="${status.color}" stroke="rgba(255,255,255,0.95)" stroke-width="1.6"/>
+              <circle cx="12" cy="10.8" r="4.2" fill="rgba(255,255,255,0.92)"/>
+            </svg>
+          </div>
+          <div data-hit style="margin-top: 3px; background: ${city.__selected ? hexToRgba(status.color, 0.35) : "rgba(4, 10, 24, 0.88)"}; border: ${city.__selected ? 2 : 1}px solid ${status.color}; border-radius: 8px; padding: 3px 8px; font-size: 10.5px; font-weight: 600; color: #fff; white-space: nowrap;">
             ${city.name} · <span style="color: ${status.color};">${city.people}</span>
           </div>
         </div>`;
 
+      const tooltip = el.querySelector<HTMLElement>("[data-tooltip]")!;
       const select = (e: Event) => {
         e.stopPropagation();
         onSelectCity(city.__selected ? null : { ...city });
@@ -172,7 +185,8 @@ export default function GlobeView({
       el.querySelectorAll<HTMLElement>("[data-hit]").forEach((hit) => {
         hit.style.pointerEvents = "auto";
         hit.style.cursor = "pointer";
-        hit.title = `${city.name} — ${city.people} personnes`;
+        hit.addEventListener("pointerenter", () => (tooltip.style.display = "block"));
+        hit.addEventListener("pointerleave", () => (tooltip.style.display = "none"));
         hit.addEventListener("pointerdown", (e) => {
           downAt = [e.clientX, e.clientY];
           e.stopPropagation();

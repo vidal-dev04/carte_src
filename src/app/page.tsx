@@ -8,6 +8,7 @@ import Legend from "@/components/Legend";
 import CountryCard from "@/components/CountryCard";
 import Overview from "@/components/Overview";
 import { City, COUNTRIES, Country, TOTAL_PEOPLE, getStatus } from "@/data/countries";
+import { DEFAULT_STYLE, MAP_STYLES, MapStyle } from "@/data/mapStyles";
 
 // Le globe utilise WebGL : chargement côté client uniquement
 const GlobeView = dynamic(() => import("@/components/GlobeView"), {
@@ -24,6 +25,8 @@ export default function Home() {
   const [selectedCity, setSelectedCity] = useState<City | null>(null);
   const [showLegend, setShowLegend] = useState(false);
   const [showOverview, setShowOverview] = useState(false);
+  const [mapStyle, setMapStyle] = useState<MapStyle>(DEFAULT_STYLE);
+  const [showStyles, setShowStyles] = useState(false);
   const sorted = [...COUNTRIES].sort((a, b) => b.people - a.people);
   const selectedStatus = selected ? getStatus(selected.people) : null;
 
@@ -71,17 +74,29 @@ export default function Home() {
         <GlobeView
           selected={selected}
           selectedCity={selectedCity}
+          mapStyle={mapStyle}
           onSelect={selectCountry}
           onSelectCity={setSelectedCity}
         />
 
-        {/* Boutons aperçu + légende */}
-        <div className="absolute top-3 right-3 z-10 flex gap-2">
+        {/* Boutons fond de carte + aperçu + légende */}
+        <div className="absolute top-3 right-3 z-20 flex gap-2">
+          <button
+            onClick={() => setShowStyles((v) => !v)}
+            title="Changer le fond de carte"
+            className={`rounded-full border px-3 py-1.5 text-xs font-semibold backdrop-blur-md transition-colors ${
+              showStyles
+                ? "border-[#29ABE2] bg-[#29ABE2]/25 text-white"
+                : "border-white/20 bg-[#040a18]/80 text-white/85 hover:bg-white/10"
+            }`}
+          >
+            {mapStyle.icon} <span className="hidden sm:inline">{mapStyle.label}</span>
+          </button>
           <button
             onClick={() => setShowOverview(true)}
             className="rounded-full border border-[#f5d84a]/60 bg-[#040a18]/80 px-3 py-1.5 text-xs font-semibold text-[#f5d84a] backdrop-blur-md transition-colors hover:bg-[#f5d84a]/15"
           >
-            🗺️ Voir l&apos;aperçu
+            🗺️ <span className="hidden sm:inline">Voir l&apos;</span>aperçu
           </button>
           <button
             onClick={() => setShowLegend((v) => !v)}
@@ -94,6 +109,38 @@ export default function Home() {
             Légende
           </button>
         </div>
+
+        {/* Choix du fond de carte */}
+        {showStyles && (
+          <div className="absolute top-14 right-3 z-20 w-60 overflow-hidden rounded-2xl border border-white/15 bg-[#040a18]/95 backdrop-blur-md">
+            <p className="border-b border-white/10 px-3 py-2 text-[10px] font-bold tracking-widest text-sky-200/70 uppercase">
+              Fond de carte
+            </p>
+            {MAP_STYLES.map((style) => (
+              <button
+                key={style.id}
+                onClick={() => {
+                  setMapStyle(style);
+                  setShowStyles(false);
+                }}
+                className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors ${
+                  mapStyle.id === style.id ? "bg-[#29ABE2]/20" : "hover:bg-white/10"
+                }`}
+              >
+                <span className="text-lg">{style.icon}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs font-semibold text-white">
+                    {style.label}
+                  </span>
+                  <span className="block text-[10px] text-white/55">{style.hint}</span>
+                </span>
+                {mapStyle.id === style.id && (
+                  <span className="text-xs text-[#4db8ff]">✓</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
         {showLegend && (
           <div className="absolute top-13 right-3 z-10 w-64 md:hidden">
             <Legend />
@@ -163,12 +210,21 @@ export default function Home() {
           ))}
         </div>
 
-        <p className="pointer-events-none absolute bottom-3 left-1/2 hidden -translate-x-1/2 text-xs text-white/40 md:block">
+        {/* Textes lisibles aussi bien sur fond sombre que sur fond clair */}
+        <p
+          className={`pointer-events-none absolute bottom-3 left-1/2 hidden -translate-x-1/2 rounded-full px-3 py-1 text-xs md:block ${
+            mapStyle.light ? "bg-white/70 text-slate-700" : "text-white/40"
+          }`}
+        >
           Faites glisser pour explorer • Cliquez sur un pays, puis sur une ville pour zoomer
         </p>
 
-        <p className="pointer-events-none absolute right-2 bottom-0.5 z-10 text-[9px] text-white/35">
-          Imagerie © Esri, Maxar, Earthstar Geographics
+        <p
+          className={`pointer-events-none absolute right-2 bottom-0.5 z-10 rounded px-1 text-[9px] ${
+            mapStyle.light ? "bg-white/70 text-slate-600" : "text-white/35"
+          }`}
+        >
+          {mapStyle.attribution}
         </p>
       </section>
 

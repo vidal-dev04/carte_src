@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Globe, { GlobeMethods } from "react-globe.gl";
 import { City, COUNTRIES, Country, getStatus } from "@/data/countries";
+import { MapStyle } from "@/data/mapStyles";
 
 type CountryFeature = {
   properties: { ADM0_A3: string; ADMIN: string };
@@ -14,6 +15,7 @@ type CityPoint = City & { __selected: boolean };
 type GlobeViewProps = {
   selected: Country | null;
   selectedCity: City | null;
+  mapStyle: MapStyle;
   onSelect: (country: Country | null) => void;
   onSelectCity: (city: City | null) => void;
 };
@@ -38,6 +40,7 @@ function hexToRgba(hex: string, alpha: number) {
 export default function GlobeView({
   selected,
   selectedCity,
+  mapStyle,
   onSelect,
   onSelectCity,
 }: GlobeViewProps) {
@@ -58,6 +61,23 @@ export default function GlobeView({
     observer.observe(wrapper);
     return () => observer.disconnect();
   }, []);
+
+  // three-globe garde les tuiles déjà téléchargées en cache : sans vidage,
+  // changer de fond de carte n'aurait aucun effet à l'écran.
+  const firstStyle = useRef(true);
+  useEffect(() => {
+    if (firstStyle.current) {
+      firstStyle.current = false;
+      return;
+    }
+    const globe = globeRef.current;
+    if (!globe) return;
+    globe.globeTileEngineClearCache();
+    // Le cache vidé ne suffit pas : on secoue imperceptiblement la caméra
+    // pour que la couche recalcule les tuiles à afficher.
+    const pov = globe.pointOfView();
+    globe.pointOfView({ ...pov, altitude: pov.altitude * 1.0002 }, 0);
+  }, [mapStyle]);
 
   // Charge les frontières et ne garde que les pays suivis
   useEffect(() => {
@@ -211,12 +231,10 @@ export default function GlobeView({
           ref={globeRef}
           width={size.width}
           height={size.height}
-          // Tuiles satellite haute résolution (le relief reste net en zoomant)
-          globeTileEngineUrl={(x, y, l) =>
-            `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${l}/${y}/${x}`
-          }
+          // Tuiles haute résolution : le fond reste net en zoomant
+          globeTileEngineUrl={mapStyle.tileUrl}
           backgroundImageUrl="/textures/night-sky.png"
-          atmosphereColor="#4db8ff"
+          atmosphereColor={mapStyle.light ? "#bfe6ff" : "#4db8ff"}
           atmosphereAltitude={0.18}
           polygonsData={features}
           polygonAltitude={(f) => {

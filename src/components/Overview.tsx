@@ -14,10 +14,13 @@ type OverviewProps = {
   onClose: () => void;
 };
 
-// Dimensions du visuel exporté
-const W = 1200;
-const H = 880;
-const MAP = { x: 0, y: 112, w: W, h: H - 112 };
+// Deux formats : paysage (écran large) et portrait (téléphone), pour que
+// le visuel tienne entièrement à l'écran sans défilement.
+type Layout = { W: number; H: number; header: number; portrait: boolean };
+const LANDSCAPE: Layout = { W: 1200, H: 880, header: 112, portrait: false };
+const PORTRAIT: Layout = { W: 760, H: 1180, header: 178, portrait: true };
+
+type Map = { x: number; y: number; w: number; h: number };
 
 function ringsOf(geometry: Feature["geometry"]): Ring[] {
   if (geometry.type === "Polygon") return geometry.coordinates as Ring[];
@@ -28,7 +31,8 @@ function ringsOf(geometry: Feature["geometry"]): Ring[] {
 // selon la latitude moyenne de la zone pour limiter la déformation)
 function makeProjection(
   points: [number, number][],
-  pad: { l: number; r: number; t: number; b: number }
+  pad: { l: number; r: number; t: number; b: number },
+  map: Map
 ) {
   const lngs = points.map((p) => p[0]);
   const lats = points.map((p) => p[1]);
@@ -38,14 +42,14 @@ function makeProjection(
   const maxLat = Math.max(...lats) + pad.t;
   const k = Math.max(0.45, Math.cos((((minLat + maxLat) / 2) * Math.PI) / 180));
   const scale = Math.min(
-    MAP.w / ((maxLng - minLng) * k),
-    MAP.h / (maxLat - minLat)
+    map.w / ((maxLng - minLng) * k),
+    map.h / (maxLat - minLat)
   );
   const cx = ((minLng + maxLng) / 2) * k;
   const cy = (minLat + maxLat) / 2;
   return (lng: number, lat: number): [number, number] => [
-    MAP.x + MAP.w / 2 + (lng * k - cx) * scale,
-    MAP.y + MAP.h / 2 - (lat - cy) * scale,
+    map.x + map.w / 2 + (lng * k - cx) * scale,
+    map.y + map.h / 2 - (lat - cy) * scale,
   ];
 }
 
@@ -90,7 +94,7 @@ const CHIP_H = 24;
  * ou qu'elles recouvrent une épingle (cas France / Belgique, très proches).
  * Une étiquette déplacée est reliée à son épingle par un trait.
  */
-function layoutPins(items: PinItem[]): PlacedPin[] {
+function layoutPins(items: PinItem[], bounds: Map): PlacedPin[] {
   type Rect = { x: number; y: number; w: number; h: number };
   const overlaps = (a: Rect, b: Rect) =>
     a.x < b.x + b.w + 6 &&
@@ -119,26 +123,49 @@ function layoutPins(items: PinItem[]): PlacedPin[] {
         [-side, -8],
         [side, 20],
         [-side, 20],
-        [0, 66],
-        [0, -76],
         [side, -40],
         [-side, -40],
+        [0, 66],
+        [0, -76],
+        [side, 48],
+        [-side, 48],
+        [side * 1.5, -8],
+        [-side * 1.5, -8],
+        [side, -70],
+        [-side, -70],
         [0, 96],
+        [0, -106],
+        [side * 1.5, 30],
+        [-side * 1.5, 30],
       ];
+      // Une étiquette ne doit ni chevaucher une autre, ni sortir du cadre
+      const inside = (x: number, y: number) =>
+        x >= bounds.x + 6 &&
+        x + chipW <= bounds.x + bounds.w - 6 &&
+        y >= bounds.y + 4 &&
+        y + CHIP_H <= bounds.y + bounds.h - 4;
       const fit =
-        candidates.find(
-          ([dx, dy]) =>
-            !taken.some((t) =>
-              overlaps(
-                { x: item.x - chipW / 2 + dx, y: item.y + dy, w: chipW, h: CHIP_H },
-                t
-              )
-            )
-        ) ?? candidates[0];
-      const chipX = item.x - chipW / 2 + fit[0];
-      const chipY = item.y + fit[1];
+        candidates.find(([dx, dy]) => {
+          const x = item.x - chipW / 2 + dx;
+          const y = item.y + dy;
+          return (
+            inside(x, y) && !taken.some((t) => overlaps({ x, y, w: chipW, h: CHIP_H }, t))
+          );
+        }) ?? candidates[0];
+      // Filet de sécurité : on ramène l'étiquette dans le cadre
+      const chipX = Math.min(
+        Math.max(item.x - chipW / 2 + fit[0], bounds.x + 6),
+        bounds.x + bounds.w - chipW - 6
+      );
+      const chipY = Math.min(
+        Math.max(item.y + fit[1], bounds.y + 4),
+        bounds.y + bounds.h - CHIP_H - 4
+      );
       taken.push({ x: chipX, y: chipY, w: chipW, h: CHIP_H });
-      return { ...item, chipX, chipY, chipW, moved: fit[0] !== 0 || fit[1] !== 6 };
+      // Trait de rappel dès que l'étiquette n'est plus juste sous son épingle
+      const moved =
+        Math.abs(chipX - (item.x - chipW / 2)) > 2 || Math.abs(chipY - (item.y + 6)) > 2;
+      return { ...item, chipX, chipY, chipW, moved };
     });
 }
 
@@ -213,21 +240,41 @@ export default function Overview({ initialCountryId, onClose }: OverviewProps) {
       .then(setLogoDataUrl);
   }, []);
 
+  // Le visuel bascule en portrait sur les écrans plus hauts que larges
+  const [{ W, H, header, portrait }, setLayout] = useState<Layout>(LANDSCAPE);
+  useEffect(() => {
+    const apply = () => {
+      if (window.innerHeight <= window.innerWidth * 1.1) return setLayout(LANDSCAPE);
+      // Le visuel épouse la forme de l'écran pour éviter les bandes vides
+      // (la barre d'outils occupe environ 92 px).
+      const ratio = (window.innerHeight - 92) / Math.max(1, window.innerWidth - 16);
+      const H = Math.round(PORTRAIT.W * Math.min(1.78, Math.max(1.3, ratio)));
+      setLayout({ ...PORTRAIT, H });
+    };
+    apply();
+    window.addEventListener("resize", apply);
+    return () => window.removeEventListener("resize", apply);
+  }, []);
+
   const country = COUNTRIES.find((c) => c.id === view) ?? null;
   const trackedIds = useMemo(() => new Set(COUNTRIES.map((c) => c.id)), []);
 
   const proj = useMemo(() => {
+    const map: Map = { x: 0, y: header, w: W, h: H - header };
     if (country) {
       const pts: [number, number][] = country.cities.map((c) => [c.lng, c.lat]);
       pts.push([country.lng, country.lat]);
-      return makeProjection(pts, { l: 3.5, r: 3.5, t: 2.5, b: 3 });
+      return makeProjection(pts, { l: 3.5, r: 3.5, t: 2.5, b: 3 }, map);
     }
     const pts: [number, number][] = COUNTRIES.flatMap((c) => [
       [c.lng, c.lat] as [number, number],
       ...c.cities.map((city) => [city.lng, city.lat] as [number, number]),
     ]);
-    return makeProjection(pts, { l: 16, r: 16, t: 26, b: 9 });
-  }, [country]);
+    const pad = portrait
+      ? { l: 6, r: 6, t: 26, b: 9 }
+      : { l: 16, r: 16, t: 26, b: 9 };
+    return makeProjection(pts, pad, map);
+  }, [country, W, H, header, portrait]);
 
   const pins = useMemo(() => {
     const items: PinItem[] = country
@@ -255,8 +302,8 @@ export default function Overview({ initialCountryId, onClose }: OverviewProps) {
             size: 28,
           };
         });
-    return layoutPins(items);
-  }, [country, proj]);
+    return layoutPins(items, { x: 0, y: header, w: W, h: H - header });
+  }, [country, proj, W, H, header]);
 
   const dateLabel = new Intl.DateTimeFormat("fr-FR", {
     month: "long",
@@ -298,57 +345,62 @@ export default function Overview({ initialCountryId, onClose }: OverviewProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-[#02060f]/95 backdrop-blur-sm">
-      {/* Barre d'actions */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3">
-        <span className="mr-2 text-sm font-bold text-white">Aperçu</span>
-        <button
-          onClick={() => setView("world")}
-          className={`rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
-            !country
-              ? "border-[#29ABE2] bg-[#29ABE2]/25 text-white"
-              : "border-white/20 text-white/75 hover:bg-white/10"
-          }`}
-        >
-          🌍 Monde
-        </button>
-        {COUNTRIES.map((c) => (
-          <button
-            key={c.id}
-            onClick={() => setView(c.id)}
-            className={`rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
-              view === c.id
-                ? "border-[#29ABE2] bg-[#29ABE2]/25 text-white"
-                : "border-white/20 text-white/75 hover:bg-white/10"
-            }`}
-          >
-            {c.name}
-          </button>
-        ))}
-        <div className="ml-auto flex items-center gap-2">
+      {/* Barre d'actions — titre et actions sur une ligne, pays sur l'autre */}
+      <div className="shrink-0 border-b border-white/10 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-bold text-white">Aperçu</span>
           <button
             onClick={downloadPng}
-            className="rounded-full border border-[#f5d84a]/60 bg-[#f5d84a]/15 px-3 py-1 text-xs font-semibold text-[#f5d84a] transition-colors hover:bg-[#f5d84a]/25"
+            className="ml-auto rounded-full border border-[#f5d84a]/60 bg-[#f5d84a]/15 px-3 py-1 text-xs font-semibold whitespace-nowrap text-[#f5d84a] transition-colors hover:bg-[#f5d84a]/25"
           >
-            ⬇ Télécharger en image
+            ⬇ <span className="hidden sm:inline">Télécharger en </span>image
           </button>
           <button
             onClick={onClose}
-            className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold text-white/85 transition-colors hover:bg-white/10"
+            className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold whitespace-nowrap text-white/85 transition-colors hover:bg-white/10"
           >
             ✕ Fermer
           </button>
         </div>
+        <div className="mt-2 flex gap-2 overflow-x-auto pb-0.5">
+          <button
+            onClick={() => setView("world")}
+            className={`shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
+              !country
+                ? "border-[#29ABE2] bg-[#29ABE2]/25 text-white"
+                : "border-white/20 text-white/75 hover:bg-white/10"
+            }`}
+          >
+            🌍 Monde
+          </button>
+          {COUNTRIES.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => setView(c.id)}
+              className={`shrink-0 rounded-full border px-3 py-1 text-xs font-semibold whitespace-nowrap transition-colors ${
+                view === c.id
+                  ? "border-[#29ABE2] bg-[#29ABE2]/25 text-white"
+                  : "border-white/20 text-white/75 hover:bg-white/10"
+              }`}
+            >
+              {c.name}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Carte statique — défilable sur petit écran pour rester lisible */}
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
+      {/* Carte statique — tient entièrement dans l'espace disponible */}
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-2 md:p-3">
         <svg
           ref={svgRef}
           xmlns="http://www.w3.org/2000/svg"
           width={W}
           height={H}
           viewBox={`0 0 ${W} ${H}`}
-          className="h-auto max-h-full w-full max-w-6xl min-w-[720px] shrink-0 rounded-2xl border border-white/10"
+          className="max-h-full max-w-full rounded-2xl border border-white/10"
+          // width/height auto : le navigateur réduit le visuel sans le déformer
+          style={{ width: "auto", height: "auto" }}
+          preserveAspectRatio="xMidYMid meet"
           fontFamily="Helvetica, Arial, sans-serif"
         >
           <defs>
@@ -388,36 +440,36 @@ export default function Overview({ initialCountryId, onClose }: OverviewProps) {
             <Pin key={pin.key} pin={pin} />
           ))}
 
-          {/* En-tête */}
-          <rect width={W} height={112} fill="rgba(4,10,24,0.85)" />
-          <line x1="0" y1="112" x2={W} y2="112" stroke="rgba(255,255,255,0.12)" />
+          {/* En-tête — le total passe sous le titre en portrait */}
+          <rect width={W} height={header} fill="rgba(4,10,24,0.85)" />
+          <line x1="0" y1={header} x2={W} y2={header} stroke="rgba(255,255,255,0.12)" />
           {logoDataUrl && (
             <image href={logoDataUrl} x="22" y="14" width="70" height="85" />
           )}
-          <text x="108" y="48" fontSize="30" fontWeight="800" fill="#ffffff">
+          <text x="108" y="48" fontSize={portrait ? 27 : 30} fontWeight="800" fill="#ffffff">
             Sacerdoce Royal
           </text>
-          <text x="108" y="72" fontSize="15" fontStyle="italic" fill="#f5d84a">
+          <text x="108" y="72" fontSize={portrait ? 13.5 : 15} fontStyle="italic" fill="#f5d84a">
             L&apos;Esprit Saint glorifiant Jésus — Que ton règne vienne !
           </text>
-          <text x="108" y="94" fontSize="14" fill="#9fc9e8">
+          <text x="108" y="94" fontSize={portrait ? 12.5 : 14} fill="#9fc9e8">
             {country
               ? `${country.name} — carte des effectifs · ${dateLabel}`
               : `Carte mondiale des effectifs · ${dateLabel}`}
           </text>
           <rect
-            x={W - 24 - totalBoxW}
-            y={30}
-            width={totalBoxW}
-            height={52}
+            x={portrait ? 22 : W - 24 - totalBoxW}
+            y={portrait ? 116 : 30}
+            width={portrait ? W - 44 : totalBoxW}
+            height={portrait ? 48 : 52}
             rx={14}
             fill="rgba(41,171,226,0.16)"
             stroke="rgba(41,171,226,0.5)"
             strokeWidth="1.4"
           />
           <text
-            x={W - 24 - totalBoxW / 2}
-            y={62}
+            x={portrait ? W / 2 : W - 24 - totalBoxW / 2}
+            y={portrait ? 147 : 62}
             fontSize="17"
             fill="#cfe9fb"
             textAnchor="middle"

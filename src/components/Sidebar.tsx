@@ -1,25 +1,34 @@
 "use client";
 
 import Image from "next/image";
-import { City, COUNTRIES, Country, TOTAL_PEOPLE, getStatus } from "@/data/countries";
-import CountryCard from "./CountryCard";
+import {
+  COORDINATIONS,
+  CoordinationWithTotal,
+  Intendance,
+  LISTED_PEOPLE,
+  MAX_PEOPLE,
+  TOTAL_MEMBERS,
+  UNASSIGNED,
+  colorOf,
+  shareOf,
+} from "@/data/network";
+import CoordinationCard from "./CoordinationCard";
 import Legend from "./Legend";
 
 type SidebarProps = {
-  selected: Country | null;
-  selectedCity: City | null;
-  onSelect: (country: Country | null) => void;
-  onSelectCity: (city: City | null) => void;
+  selected: CoordinationWithTotal | null;
+  selectedIntendance: Intendance | null;
+  onSelect: (coordination: CoordinationWithTotal | null) => void;
+  onSelectIntendance: (intendance: Intendance | null) => void;
 };
 
 export default function Sidebar({
   selected,
-  selectedCity,
+  selectedIntendance,
   onSelect,
-  onSelectCity,
+  onSelectIntendance,
 }: SidebarProps) {
-  const sorted = [...COUNTRIES].sort((a, b) => b.people - a.people);
-  const selectedStatus = selected ? getStatus(selected.people) : null;
+  const sorted = [...COORDINATIONS].sort((a, b) => b.people - a.people);
 
   return (
     <aside className="hidden h-full shrink-0 flex-col gap-4 overflow-y-auto border-r border-white/10 bg-[#040a18]/95 p-4 md:flex md:w-76 lg:w-90">
@@ -40,75 +49,82 @@ export default function Sidebar({
           <p className="text-xs font-medium text-[#f5d84a] italic">
             Esprit Saint glorifiant Jésus — Que ton règne vienne !
           </p>
-          <p className="mt-1 text-[11px] text-sky-200/60">
-            Carte mondiale des effectifs
-          </p>
+          <p className="mt-1 text-[11px] text-sky-200/60">Répartition des membres</p>
         </div>
       </header>
 
-      {/* Total */}
-      <div className="flex items-center justify-between rounded-2xl border border-[#29ABE2]/30 bg-gradient-to-r from-[#29ABE2]/20 to-[#29ABE2]/5 px-4 py-3">
-        <span className="text-sm text-sky-100/80">Total dans le monde</span>
-        <span className="text-2xl font-extrabold text-[#4db8ff]">{TOTAL_PEOPLE}</span>
+      {/* Effectif total */}
+      <div className="rounded-2xl border border-[#29ABE2]/30 bg-gradient-to-r from-[#29ABE2]/20 to-[#29ABE2]/5 px-4 py-3">
+        <div className="flex items-baseline justify-between">
+          <span className="text-sm text-sky-100/80">Total des membres</span>
+          <span className="text-2xl font-extrabold text-[#4db8ff]">{TOTAL_MEMBERS}</span>
+        </div>
+        {UNASSIGNED > 0 && (
+          <p className="mt-1.5 border-t border-white/10 pt-1.5 text-[11px] text-white/50">
+            {LISTED_PEOPLE} répartis · {UNASSIGNED} en attente de rattachement
+          </p>
+        )}
       </div>
 
-      {/* Message du pays sélectionné */}
-      {selected && selectedStatus && (
-        <div
-          className="rounded-2xl border p-3 text-sm"
-          style={{
-            borderColor: `${selectedStatus.color}66`,
-            backgroundColor: `${selectedStatus.color}1a`,
-          }}
-        >
-          <p className="font-bold" style={{ color: selectedStatus.color }}>
-            {selected.name} — {selectedStatus.label}
-          </p>
-          <p className="mt-1 text-white/75">{selectedStatus.message}</p>
+      {/* Détail de la coordination ouverte */}
+      {selected && (
+        <div className="rounded-2xl border border-[#29ABE2]/40 bg-[#29ABE2]/10 p-3 text-sm">
+          <div className="flex items-baseline justify-between gap-2">
+            <p className="font-bold text-white">{selected.name}</p>
+            <p className="shrink-0 font-bold text-[#4db8ff]">
+              {selected.people}{" "}
+              <span className="text-[11px] font-normal text-white/50">membres</span>
+            </p>
+          </div>
 
-          {/* Détail par ville — cliquer zoome sur la ville */}
-          <ul className="mt-2 space-y-0.5 border-t border-white/10 pt-2">
-            {[...selected.cities]
-              .sort((a, b) => b.people - a.people)
-              .map((city) => {
-                const cityStatus = getStatus(city.people);
-                const isActive = selectedCity?.name === city.name;
-                return (
-                  <li key={city.name}>
-                    <button
-                      onClick={() => onSelectCity(isActive ? null : city)}
-                      className={`flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-xs transition-colors ${
-                        isActive ? "bg-white/15" : "hover:bg-white/10"
-                      }`}
-                    >
-                      <span
-                        className="h-2.5 w-2.5 shrink-0 rounded-full"
-                        style={{
-                          backgroundColor: cityStatus.color,
-                          boxShadow: `0 0 6px ${cityStatus.color}`,
-                        }}
-                      />
-                      <span className="min-w-0 flex-1 truncate text-left text-white/90">
-                        {city.name}
-                        {isActive && <span className="ml-1 text-white/50">🔍</span>}
-                      </span>
-                      <span
-                        className="hidden shrink-0 text-[10px] lg:inline"
-                        style={{ color: cityStatus.color }}
-                      >
-                        {cityStatus.label}
-                      </span>
-                      <span
-                        className="shrink-0 font-bold"
-                        style={{ color: cityStatus.color }}
-                      >
-                        {city.people}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-          </ul>
+          {selected.intendances.length > 0 ? (
+            <>
+              <p className="mt-0.5 text-[11px] text-white/55">
+                {selected.intendances.length} intendances — cliquez pour zoomer
+              </p>
+              <ul className="mt-2 space-y-0.5 border-t border-white/10 pt-2">
+                {[...selected.intendances]
+                  .sort((a, b) => b.people - a.people)
+                  .map((intendance) => {
+                    const isActive = selectedIntendance?.name === intendance.name;
+                    const color = colorOf(intendance.people);
+                    return (
+                      <li key={intendance.name}>
+                        <button
+                          onClick={() => onSelectIntendance(isActive ? null : intendance)}
+                          className={`w-full rounded-lg px-1.5 py-1 transition-colors ${
+                            isActive ? "bg-white/15" : "hover:bg-white/10"
+                          }`}
+                        >
+                          <div className="flex items-baseline gap-2 text-xs">
+                            <span className="min-w-0 flex-1 truncate text-left text-white/90">
+                              {intendance.name}
+                              {isActive && <span className="ml-1 text-white/50">🔍</span>}
+                            </span>
+                            <span className="shrink-0 font-bold" style={{ color }}>
+                              {intendance.people}
+                            </span>
+                          </div>
+                          <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-white/10">
+                            <div
+                              className="h-full rounded-full"
+                              style={{
+                                width: `${Math.max(3, (intendance.people / MAX_PEOPLE) * 100)}%`,
+                                backgroundColor: color,
+                              }}
+                            />
+                          </div>
+                        </button>
+                      </li>
+                    );
+                  })}
+              </ul>
+            </>
+          ) : (
+            <p className="mt-1 text-[11px] text-white/55">
+              {selected.subtitle ?? "Pas encore de découpage par intendance."}
+            </p>
+          )}
 
           <button
             onClick={() => onSelect(null)}
@@ -119,18 +135,23 @@ export default function Sidebar({
         </div>
       )}
 
-      {/* Liste des pays */}
+      {/* Liste des coordinations */}
       <div className="flex flex-col gap-2.5">
-        <h2 className="text-xs font-bold tracking-widest text-sky-200/80 uppercase">
-          Nos assemblées
-        </h2>
-        {sorted.map((country) => (
-          <CountryCard
-            key={country.id}
-            country={country}
-            selected={selected?.id === country.id}
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-xs font-bold tracking-widest text-sky-200/80 uppercase">
+            Coordinations
+          </h2>
+          <span className="text-[10px] text-white/40">
+            {Math.round(shareOf(LISTED_PEOPLE) * 100)} % de l&apos;effectif
+          </span>
+        </div>
+        {sorted.map((coordination) => (
+          <CoordinationCard
+            key={coordination.id}
+            coordination={coordination}
+            selected={selected?.id === coordination.id}
             onClick={() =>
-              onSelect(selected?.id === country.id ? null : country)
+              onSelect(selected?.id === coordination.id ? null : coordination)
             }
           />
         ))}

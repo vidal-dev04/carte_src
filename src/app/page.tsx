@@ -2,12 +2,20 @@
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import Legend from "@/components/Legend";
-import CountryCard from "@/components/CountryCard";
+import CoordinationCard from "@/components/CoordinationCard";
 import Overview from "@/components/Overview";
-import { City, COUNTRIES, Country, TOTAL_PEOPLE, getStatus } from "@/data/countries";
+import {
+  COLOR_CODING,
+  COORDINATIONS,
+  CoordinationWithTotal,
+  Intendance,
+  TOTAL_MEMBERS,
+  UNASSIGNED,
+  colorOf,
+} from "@/data/network";
 import { DEFAULT_STYLE, MAP_STYLES, MapStyle } from "@/data/mapStyles";
 
 // Le globe utilise WebGL : chargement côté client uniquement
@@ -21,20 +29,20 @@ const GlobeView = dynamic(() => import("@/components/GlobeView"), {
 });
 
 export default function Home() {
-  const [selected, setSelected] = useState<Country | null>(null);
-  const [selectedCity, setSelectedCity] = useState<City | null>(null);
+  const [selected, setSelected] = useState<CoordinationWithTotal | null>(null);
+  const [selectedIntendance, setSelectedIntendance] = useState<Intendance | null>(null);
   const [showLegend, setShowLegend] = useState(false);
   const [showOverview, setShowOverview] = useState(false);
   const [mapStyle, setMapStyle] = useState<MapStyle>(DEFAULT_STYLE);
   const [showStyles, setShowStyles] = useState(false);
-  const sorted = [...COUNTRIES].sort((a, b) => b.people - a.people);
-  const selectedStatus = selected ? getStatus(selected.people) : null;
+  const sorted = [...COORDINATIONS].sort((a, b) => b.people - a.people);
 
-  // Changer de pays (ou revenir à la vue globale) désélectionne la ville
-  const selectCountry = (country: Country | null) => {
-    setSelected(country);
-    setSelectedCity(null);
-  };
+  // Changer de coordination (ou revenir à la vue globale) réinitialise l'intendance.
+  // Identité stable : sinon le globe reconstruit tous ses marqueurs à chaque rendu.
+  const selectCoordination = useCallback((coordination: CoordinationWithTotal | null) => {
+    setSelected(coordination);
+    setSelectedIntendance(null);
+  }, []);
 
   return (
     <main className="flex h-dvh flex-col overflow-hidden bg-[#02060f] md:flex-row">
@@ -56,27 +64,27 @@ export default function Home() {
         </div>
         <div className="shrink-0 rounded-xl border border-[#29ABE2]/30 bg-[#29ABE2]/15 px-3 py-1 text-center">
           <div className="text-base leading-tight font-extrabold text-[#4db8ff]">
-            {TOTAL_PEOPLE}
+            {TOTAL_MEMBERS}
           </div>
-          <div className="text-[9px] text-sky-100/70">personnes</div>
+          <div className="text-[9px] text-sky-100/70">membres</div>
         </div>
       </header>
 
       {/* Sidebar — tablette et desktop */}
       <Sidebar
         selected={selected}
-        selectedCity={selectedCity}
-        onSelect={selectCountry}
-        onSelectCity={setSelectedCity}
+        selectedIntendance={selectedIntendance}
+        onSelect={selectCoordination}
+        onSelectIntendance={setSelectedIntendance}
       />
 
       <section className="relative min-h-0 flex-1">
         <GlobeView
           selected={selected}
-          selectedCity={selectedCity}
+          selectedIntendance={selectedIntendance}
           mapStyle={mapStyle}
-          onSelect={selectCountry}
-          onSelectCity={setSelectedCity}
+          onSelect={selectCoordination}
+          onSelectIntendance={setSelectedIntendance}
         />
 
         {/* Boutons fond de carte + aperçu + légende */}
@@ -98,16 +106,18 @@ export default function Home() {
           >
             🗺️ <span className="hidden sm:inline">Voir l&apos;</span>aperçu
           </button>
-          <button
-            onClick={() => setShowLegend((v) => !v)}
-            className={`rounded-full border px-3 py-1.5 text-xs font-semibold backdrop-blur-md transition-colors md:hidden ${
-              showLegend
-                ? "border-[#29ABE2] bg-[#29ABE2]/25 text-white"
-                : "border-white/20 bg-[#040a18]/80 text-white/85"
-            }`}
-          >
-            Légende
-          </button>
+          {COLOR_CODING && (
+            <button
+              onClick={() => setShowLegend((v) => !v)}
+              className={`rounded-full border px-3 py-1.5 text-xs font-semibold backdrop-blur-md transition-colors md:hidden ${
+                showLegend
+                  ? "border-[#29ABE2] bg-[#29ABE2]/25 text-white"
+                  : "border-white/20 bg-[#040a18]/80 text-white/85"
+              }`}
+            >
+              Légende
+            </button>
+          )}
         </div>
 
         {/* Choix du fond de carte */}
@@ -141,53 +151,52 @@ export default function Home() {
             ))}
           </div>
         )}
+
         {showLegend && (
-          <div className="absolute top-13 right-3 z-10 w-64 md:hidden">
+          <div className="absolute top-14 right-3 z-10 w-64 md:hidden">
             <Legend />
           </div>
         )}
 
-        {/* Message du pays sélectionné — mobile */}
-        {selected && selectedStatus && (
-          <div
-            className="absolute top-14 right-3 left-3 z-10 rounded-2xl border p-3 text-xs backdrop-blur-md md:hidden"
-            style={{
-              borderColor: `${selectedStatus.color}66`,
-              backgroundColor: "rgba(4, 10, 24, 0.85)",
-            }}
-          >
-            <p className="font-bold" style={{ color: selectedStatus.color }}>
-              {selected.name} — {selectedStatus.label}
-            </p>
-            <p className="mt-0.5 text-white/75">{selectedStatus.message}</p>
-            <div className="mt-1.5 flex max-h-20 flex-wrap gap-1.5 overflow-y-auto border-t border-white/10 pt-1.5">
-              {[...selected.cities]
-                .sort((a, b) => b.people - a.people)
-                .map((city) => {
-                  const cityStatus = getStatus(city.people);
-                  const isActive = selectedCity?.name === city.name;
-                  return (
-                    <button
-                      key={city.name}
-                      onClick={() => setSelectedCity(isActive ? null : city)}
-                      className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold text-white/90"
-                      style={{
-                        borderColor: isActive ? cityStatus.color : `${cityStatus.color}88`,
-                        backgroundColor: isActive ? `${cityStatus.color}40` : "transparent",
-                      }}
-                    >
-                      <span
-                        className="h-1.5 w-1.5 rounded-full"
-                        style={{ backgroundColor: cityStatus.color }}
-                      />
-                      {city.name}
-                      <span style={{ color: cityStatus.color }}>{city.people}</span>
-                    </button>
-                  );
-                })}
+        {/* Détail de la coordination — mobile */}
+        {selected && (
+          <div className="absolute top-14 right-3 left-3 z-10 rounded-2xl border border-[#29ABE2]/50 bg-[#040a18]/90 p-3 text-xs backdrop-blur-md md:hidden">
+            <div className="flex items-baseline justify-between gap-2">
+              <p className="font-bold text-white">{selected.name}</p>
+              <p className="shrink-0 font-bold text-[#4db8ff]">
+                {selected.people} <span className="text-[10px] text-white/50">membres</span>
+              </p>
             </div>
+            {selected.intendances.length > 0 ? (
+              <div className="mt-1.5 flex max-h-20 flex-wrap gap-1.5 overflow-y-auto border-t border-white/10 pt-1.5">
+                {[...selected.intendances]
+                  .sort((a, b) => b.people - a.people)
+                  .map((intendance) => {
+                    const isActive = selectedIntendance?.name === intendance.name;
+                    const color = colorOf(intendance.people);
+                    return (
+                      <button
+                        key={intendance.name}
+                        onClick={() => setSelectedIntendance(isActive ? null : intendance)}
+                        className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold text-white/90"
+                        style={{
+                          borderColor: isActive ? color : `${color}88`,
+                          backgroundColor: isActive ? `${color}40` : "transparent",
+                        }}
+                      >
+                        {intendance.name}
+                        <span style={{ color }}>{intendance.people}</span>
+                      </button>
+                    );
+                  })}
+              </div>
+            ) : (
+              <p className="mt-1 text-white/55">
+                {selected.subtitle ?? "Pas encore de découpage par intendance."}
+              </p>
+            )}
             <button
-              onClick={() => selectCountry(null)}
+              onClick={() => selectCoordination(null)}
               className="mt-1.5 rounded-lg border border-white/20 px-2.5 py-1 text-[11px] text-white/80"
             >
               ← Vue globale
@@ -195,16 +204,16 @@ export default function Home() {
           </div>
         )}
 
-        {/* Bande de pays défilante — mobile */}
+        {/* Bande de coordinations défilante — mobile */}
         <div className="absolute inset-x-0 bottom-0 z-10 flex snap-x gap-2 overflow-x-auto p-3 md:hidden">
-          {sorted.map((country) => (
-            <CountryCard
-              key={country.id}
-              country={country}
+          {sorted.map((coordination) => (
+            <CoordinationCard
+              key={coordination.id}
+              coordination={coordination}
               compact
-              selected={selected?.id === country.id}
+              selected={selected?.id === coordination.id}
               onClick={() =>
-                selectCountry(selected?.id === country.id ? null : country)
+                selectCoordination(selected?.id === coordination.id ? null : coordination)
               }
             />
           ))}
@@ -216,7 +225,9 @@ export default function Home() {
             mapStyle.light ? "bg-white/70 text-slate-700" : "text-white/40"
           }`}
         >
-          Faites glisser pour explorer • Cliquez sur un pays, puis sur une ville pour zoomer
+          {UNASSIGNED > 0
+            ? `${UNASSIGNED} membres restent à rattacher à une coordination`
+            : "Cliquez sur une coordination, puis sur une intendance pour zoomer"}
         </p>
 
         <p
@@ -230,7 +241,7 @@ export default function Home() {
 
       {showOverview && (
         <Overview
-          initialCountryId={selected?.id ?? null}
+          initialCoordinationId={selected?.id ?? null}
           onClose={() => setShowOverview(false)}
         />
       )}

@@ -1,28 +1,52 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Globe, { GlobeMethods } from "react-globe.gl";
-import { City, COUNTRIES, Country, getStatus } from "@/data/countries";
+import {
+  ABIDJAN_SPLIT_ALTITUDE,
+  BRAND,
+  COORDINATIONS,
+  CoordinationWithTotal,
+  Intendance,
+  colorOf,
+  intendancesOf,
+  mapLabel,
+  shareOf,
+} from "@/data/network";
 import { MapStyle } from "@/data/mapStyles";
 
 type CountryFeature = {
   properties: { ADM0_A3: string; ADMIN: string };
-  __country: Country;
+  __coordination: CoordinationWithTotal;
 };
 
-type CityPoint = City & { __selected: boolean };
+/** Un point posé sur le globe : coordination (vue monde) ou intendance */
+type MarkerPoint = {
+  key: string;
+  name: string;
+  /** Nom court affiché sur l'étiquette de la carte */
+  label: string;
+  people: number;
+  lat: number;
+  lng: number;
+  selected: boolean;
+  /** Regroupement des communes d'Abidjan : cliquer rapproche la caméra */
+  isCluster?: boolean;
+};
 
 type GlobeViewProps = {
-  selected: Country | null;
-  selectedCity: City | null;
+  selected: CoordinationWithTotal | null;
+  selectedIntendance: Intendance | null;
   mapStyle: MapStyle;
-  onSelect: (country: Country | null) => void;
-  onSelectCity: (city: City | null) => void;
+  onSelect: (coordination: CoordinationWithTotal | null) => void;
+  onSelectIntendance: (intendance: Intendance | null) => void;
 };
 
 const INITIAL_VIEW = { lat: 15, lng: -10, altitude: 2.2 };
-/** Altitude de la caméra lors du zoom sur une ville */
-const CITY_ALTITUDE = 0.07;
+/** Altitude de la caméra lors du zoom sur une intendance */
+const INTENDANCE_ALTITUDE = 0.07;
+/** Les communes d'Abidjan sont petites et proches : on descend plus bas */
+const COMMUNE_ALTITUDE = 0.018;
 
 // Sur écran étroit (portrait), on recule la caméra pour que
 // le globe et les pays restent entièrement visibles.
@@ -37,18 +61,52 @@ function hexToRgba(hex: string, alpha: number) {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
+type Rect = { left: number; top: number; right: number; bottom: number };
+
+const hits = (a: Rect, b: Rect) =>
+  a.left < b.right + 4 && a.right + 4 > b.left && a.top < b.bottom + 3 && a.bottom + 3 > b.top;
+
+const shift = (r: Rect, dx: number, dy: number): Rect => ({
+  left: r.left + dx,
+  top: r.top + dy,
+  right: r.right + dx,
+  bottom: r.bottom + dy,
+});
+
 export default function GlobeView({
   selected,
-  selectedCity,
+  selectedIntendance,
   mapStyle,
   onSelect,
-  onSelectCity,
+  onSelectIntendance,
 }: GlobeViewProps) {
   const globeRef = useRef<GlobeMethods | undefined>(undefined);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  /** Étiquettes actuellement à l'écran, pour les écarter les unes des autres */
+  const chips = useRef(
+    new Map<
+      string,
+      { pin: HTMLElement; chip: HTMLElement; link: HTMLElement; people: number }
+    >()
+  );
+  const relayoutFrame = useRef(0);
+  /**
+   * L'infobulle vit hors des marqueurs : three-globe réassigne le z-index de
+   * chaque marqueur à chaque image, une infobulle interne passerait donc
+   * derrière les marqueurs voisins.
+   */
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const hoveredPin = useRef<HTMLElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [features, setFeatures] = useState<CountryFeature[]>([]);
   const [hovered, setHovered] = useState<CountryFeature | null>(null);
+  /**
+   * On ne suit PAS l'altitude exacte : elle change en permanence pendant
+   * la rotation, ce qui recréait tous les marqueurs à chaque image (effet
+   * de clignotement). On ne retient que l'information utile : les communes
+   * d'Abidjan sont-elles regroupées ou non.
+   */
+  const [grouped, setGrouped] = useState(true);
 
   // Adapte le canvas à la taille du conteneur
   useEffect(() => {
@@ -79,35 +137,43 @@ export default function GlobeView({
     globe.pointOfView({ ...pov, altitude: pov.altitude * 1.0002 }, 0);
   }, [mapStyle]);
 
-  // Charge les frontières et ne garde que les pays suivis
+  // Charge les frontières et ne garde que les coordinations tracées
   useEffect(() => {
     fetch("/data/countries.geojson")
       .then((res) => res.json())
       .then((geojson: { features: { properties: { ADM0_A3: string } }[] }) => {
-        const byId = new Map(COUNTRIES.map((c) => [c.id, c]));
+        const byIso = new Map(
+          COORDINATIONS.filter((c) => c.iso).map((c) => [c.iso!, c])
+        );
         const tracked = geojson.features
-          .filter((f) => byId.has(f.properties.ADM0_A3))
-          .map((f) => ({ ...f, __country: byId.get(f.properties.ADM0_A3)! }));
+          .filter((f) => byIso.has(f.properties.ADM0_A3))
+          .map((f) => ({ ...f, __coordination: byIso.get(f.properties.ADM0_A3)! }));
         setFeatures(tracked as CountryFeature[]);
       });
   }, []);
 
-  // Zoom animé : ville > pays > vue globale, pause de la rotation
+  // Zoom animé : intendance > coordination > vue globale
   useEffect(() => {
     const globe = globeRef.current;
     if (!globe) return;
     const controls = globe.controls();
     const factor = aspectFactor(wrapperRef.current);
-    if (selectedCity) {
+    if (selectedIntendance) {
       controls.autoRotate = false;
       globe.pointOfView(
-        { lat: selectedCity.lat, lng: selectedCity.lng, altitude: CITY_ALTITUDE },
+        {
+          lat: selectedIntendance.lat,
+          lng: selectedIntendance.lng,
+          // Une commune d'Abidjan : on zoome nettement plus près
+          altitude:
+            selectedIntendance.inAbidjan && selectedIntendance.name !== "Abidjan"
+              ? COMMUNE_ALTITUDE
+              : INTENDANCE_ALTITUDE,
+        },
         1200
       );
     } else if (selected) {
       controls.autoRotate = false;
-      // En portrait on se rapproche légèrement pour que les
-      // étiquettes de villes (taille fixe) restent lisibles.
       globe.pointOfView(
         {
           lat: selected.lat,
@@ -120,93 +186,221 @@ export default function GlobeView({
       globe.pointOfView({ ...INITIAL_VIEW, altitude: INITIAL_VIEW.altitude * factor }, 1200);
       controls.autoRotate = true;
     }
-  }, [selected, selectedCity]);
+  }, [selected, selectedIntendance]);
+
+  // Vue monde : une pastille par coordination.
+  // Coordination ouverte : ses intendances, Abidjan regroupé tant qu'on
+  // n'est pas assez près pour distinguer ses communes.
+  const markers = useMemo<MarkerPoint[]>(() => {
+    if (!selected) {
+      return COORDINATIONS.map((c) => ({
+        key: c.id,
+        name: c.name,
+        label: c.name,
+        people: c.people,
+        lat: c.lat,
+        lng: c.lng,
+        selected: false,
+      }));
+    }
+    return intendancesOf(selected, { grouped }).map((i) => ({
+      key: i.name,
+      name: i.name,
+      label: mapLabel(i),
+      people: i.people,
+      lat: i.lat,
+      lng: i.lng,
+      selected: selectedIntendance?.name === i.name,
+      isCluster: grouped && i.name === "Abidjan",
+    }));
+  }, [selected, selectedIntendance, grouped]);
+
+  /** Colle l'infobulle au-dessus du repère survolé */
+  const positionTooltip = useCallback(() => {
+    const tip = tooltipRef.current;
+    const pin = hoveredPin.current;
+    const wrap = wrapperRef.current;
+    if (!tip || !pin || !wrap || !pin.isConnected || tip.style.display === "none")
+      return;
+    const w = wrap.getBoundingClientRect();
+    const p = pin.getBoundingClientRect();
+    const above = p.top - w.top - 10;
+    // Pas la place au-dessus : on bascule sous le repère
+    const below = above < tip.offsetHeight + 8;
+    tip.style.left = `${p.left + p.width / 2 - w.left}px`;
+    tip.style.top = `${below ? p.bottom - w.top + 10 : above}px`;
+    tip.style.transform = below ? "translate(-50%, 0)" : "translate(-50%, -100%)";
+  }, []);
+
+  const showTooltip = useCallback(
+    (point: MarkerPoint, pin: HTMLElement) => {
+      const tip = tooltipRef.current;
+      if (!tip) return;
+      hoveredPin.current = pin;
+      tip.style.borderColor = colorOf(point.people);
+      tip.innerHTML = `
+        <div style="font-weight: 700; font-size: 13px;">${point.name}</div>
+        <div style="font-size: 12px; margin-top: 2px;">👥 ${point.people} membres</div>
+        <div style="font-size: 11px; margin-top: 2px; color: rgba(232,244,253,0.6);">${Math.round(shareOf(point.people) * 100)} % de l'effectif total</div>
+        ${point.isCluster ? `<div style="font-size: 10.5px; margin-top: 4px; color: ${BRAND.gold};">Cliquez pour voir les communes</div>` : ""}`;
+      tip.style.display = "block";
+      positionTooltip();
+    },
+    [positionTooltip]
+  );
+
+  const hideTooltip = useCallback(() => {
+    hoveredPin.current = null;
+    if (tooltipRef.current) tooltipRef.current.style.display = "none";
+  }, []);
+
+  /**
+   * Écarte les étiquettes qui se chevauchent à l'écran. On mesure leur
+   * position réelle puis on décale les plus petites : les grosses
+   * intendances gardent la place sous leur repère.
+   */
+  const relayoutChips = useCallback(() => {
+    cancelAnimationFrame(relayoutFrame.current);
+    relayoutFrame.current = requestAnimationFrame(() => {
+      const entries = [...chips.current.values()].filter((e) => e.chip.isConnected);
+      const reset = (e: (typeof entries)[number]) => {
+        e.chip.style.transform = "";
+        e.link.style.display = "none";
+      };
+      if (entries.length < 2) {
+        entries.forEach(reset);
+        return;
+      }
+      entries.forEach(reset);
+      // Les repères sont des obstacles fixes
+      const taken: Rect[] = entries.map((e) => e.pin.getBoundingClientRect());
+      // Les plus gros effectifs choisissent leur place en premier
+      [...entries]
+        .sort((a, b) => b.people - a.people)
+        .forEach((entry) => {
+          const base = entry.chip.getBoundingClientRect();
+          const w = base.width;
+          const candidates: [number, number][] = [
+            [0, 0],
+            [0, 24],
+            [0, -1.8 * base.height - 26],
+            [w / 2 + 10, -16],
+            [-w / 2 - 10, -16],
+            [w / 2 + 10, 10],
+            [-w / 2 - 10, 10],
+            [0, 48],
+            [w / 2 + 10, -42],
+            [-w / 2 - 10, -42],
+            [0, 72],
+            [w + 22, -16],
+            [-w - 22, -16],
+            [w + 22, 14],
+            [-w - 22, 14],
+            [w / 2 + 10, 40],
+            [-w / 2 - 10, 40],
+            [0, -2.6 * base.height - 44],
+            [0, 96],
+          ];
+          const fit =
+            candidates.find(
+              ([dx, dy]) => !taken.some((t) => hits(shift(base, dx, dy), t))
+            ) ?? candidates[0];
+          taken.push(shift(base, fit[0], fit[1]));
+          const [dx, dy] = fit;
+          entry.chip.style.transform = dx || dy ? `translate(${dx}px, ${dy}px)` : "";
+
+          // Trait de rappel vers l'étiquette déplacée, pour qu'on sache
+          // toujours à quel repère elle appartient
+          const toY = dy + base.height / 2 + 2;
+          const distance = Math.hypot(dx, toY);
+          if (distance > 22) {
+            entry.link.style.display = "block";
+            entry.link.style.width = `${distance}px`;
+            entry.link.style.transform = `rotate(${Math.atan2(toY, dx)}rad)`;
+          } else {
+            entry.link.style.display = "none";
+          }
+        });
+      positionTooltip();
+    });
+  }, [positionTooltip]);
 
   const labelHtml = useMemo(
     () => (feature: object) => {
-      const country = (feature as CountryFeature).__country;
-      // Pays déjà sélectionné : pas d'infobulle globale, ce sont les
-      // survols des villes qui donnent le détail
-      if (country.id === selected?.id) return "";
-      const status = getStatus(country.people);
-      const cityRows = country.cities
-        .map((city) => {
-          const cityStatus = getStatus(city.people);
-          return `
-            <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; margin-top: 3px;">
-              <span style="width: 7px; height: 7px; border-radius: 50%; background: ${cityStatus.color}; flex-shrink: 0;"></span>
-              <span style="flex: 1;">${city.name}</span>
-              <span style="color: ${cityStatus.color}; font-weight: 700;">${city.people}</span>
-            </div>`;
-        })
+      const c = (feature as CountryFeature).__coordination;
+      // Coordination déjà ouverte : ce sont les survols des intendances
+      // qui donnent le détail
+      if (c.id === selected?.id) return "";
+      const rows = c.intendances
+        .slice(0, 5)
+        .map(
+          (i) => `
+            <div style="display: flex; gap: 10px; font-size: 11px; margin-top: 3px;">
+              <span style="flex: 1;">${i.name}</span>
+              <span style="color: ${BRAND.lightBlue}; font-weight: 700;">${i.people}</span>
+            </div>`
+        )
         .join("");
+      const more =
+        c.intendances.length > 5
+          ? `<div style="font-size: 10px; color: rgba(232,244,253,0.5); margin-top: 4px;">+ ${c.intendances.length - 5} autres intendances</div>`
+          : "";
       return `
-        <div style="background: rgba(5, 15, 35, 0.92); border: 1px solid ${status.color}; border-radius: 10px; padding: 8px 12px; font-family: inherit; color: #e8f4fd; max-width: 220px;">
-          <div style="font-weight: 700; font-size: 14px;">${country.name}</div>
-          <div style="font-size: 13px; margin-top: 2px;">👥 ${country.people} personnes</div>
-          <div style="color: ${status.color}; font-weight: 600; font-size: 12px; margin-top: 4px;">● ${status.label}</div>
-          <div style="border-top: 1px solid rgba(255,255,255,0.15); margin-top: 6px; padding-top: 3px;">${cityRows}</div>
+        <div style="background: rgba(5, 15, 35, 0.94); border: 1px solid ${BRAND.blue}; border-radius: 10px; padding: 8px 12px; font-family: inherit; color: #e8f4fd; max-width: 230px;">
+          <div style="font-weight: 700; font-size: 14px;">${c.name}</div>
+          <div style="font-size: 13px; margin-top: 2px;">👥 ${c.people} membres <span style="color: rgba(232,244,253,0.55);">· ${Math.round(shareOf(c.people) * 100)} %</span></div>
+          ${rows ? `<div style="border-top: 1px solid rgba(255,255,255,0.15); margin-top: 6px; padding-top: 3px;">${rows}${more}</div>` : ""}
         </div>`;
     },
     [selected]
   );
 
-  // Villes du pays sélectionné (nouvelles instances pour que la
-  // surbrillance de la ville active soit bien re-rendue)
-  const cityPoints = useMemo<CityPoint[]>(
-    () =>
-      selected
-        ? selected.cities.map((city) => ({
-            ...city,
-            __selected: selectedCity?.name === city.name,
-          }))
-        : [],
-    [selected, selectedCity]
-  );
-
-  // Marqueur HTML d'une ville : pastille colorée + étiquette « Ville · effectif ».
-  // Cliquable : zoome sur la ville (re-clic = retour à la vue pays).
-  // Seuls la pastille et l'étiquette captent les clics (pas les zones
-  // transparentes), et un léger glissement de souris/trackpad pendant
-  // le clic est toléré (seuil de 12px entre l'appui et le relâchement).
-  const compactMarkers = size.width > 0 && size.width < 480;
-  const cityMarker = useMemo(
+  // Marqueur : la taille traduit l'effectif (surface proportionnelle).
+  // Cliquable, avec une infobulle au survol.
+  const compact = size.width > 0 && size.width < 480;
+  const marker = useMemo(
     () => (data: object) => {
-      const city = data as CityPoint;
-      const status = getStatus(city.people);
-      const scale = compactMarkers ? 0.78 : 1;
+      const point = data as MarkerPoint;
+      const color = colorOf(point.people);
+      // Taille fixe : des repères proportionnels masquaient les pays
+      const pin = compact ? 18 : 22;
       const el = document.createElement("div");
       el.style.pointerEvents = "none";
       el.innerHTML = `
-        <div style="position: relative; display: flex; flex-direction: column; align-items: center; transform: translateY(-2px) scale(${scale}); font-family: inherit;">
-          <div data-tooltip style="display: none; position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); background: rgba(5, 15, 35, 0.94); border: 1px solid ${status.color}; border-radius: 10px; padding: 8px 12px; color: #e8f4fd; white-space: nowrap; pointer-events: none; z-index: 50;">
-            <div style="font-weight: 700; font-size: 13px;">${city.name}</div>
-            <div style="font-size: 12px; margin-top: 2px;">👥 ${city.people} personnes</div>
-            <div style="color: ${status.color}; font-weight: 600; font-size: 11px; margin-top: 4px;">● ${status.label}</div>
-            <div style="font-size: 10.5px; color: rgba(232,244,253,0.75); margin-top: 2px; max-width: 190px; white-space: normal;">${status.message}</div>
-          </div>
-          <div data-hit style="padding: 2px 4px 0; filter: drop-shadow(0 0 6px ${status.color}) drop-shadow(0 2px 3px rgba(0,0,0,0.5));">
-            <svg width="${city.__selected ? 30 : 24}" height="${city.__selected ? 38 : 30}" viewBox="0 0 24 30">
-              <path d="M12 0C5.85 0 1 4.9 1 10.95 1 19.1 12 30 12 30s11-10.9 11-19.05C23 4.9 18.15 0 12 0z" fill="${status.color}" stroke="rgba(255,255,255,0.95)" stroke-width="1.6"/>
-              <circle cx="12" cy="10.8" r="4.2" fill="rgba(255,255,255,0.92)"/>
+        <div style="position: relative; display: flex; flex-direction: column; align-items: center; font-family: inherit;">
+          <div data-link style="position: absolute; left: 50%; top: ${pin * 1.25 + 4}px; height: 1.6px; background: ${color}; opacity: 0.75; transform-origin: 0 50%; display: none; pointer-events: none;"></div>
+          <div data-hit style="padding: 4px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.7));">
+            <svg width="${pin}" height="${pin * 1.25}" viewBox="-3 -3 30 36" overflow="visible">
+              <!-- Liseré sombre : deux repères qui se superposent restent distincts -->
+              <path d="M12 0C5.85 0 1 4.9 1 10.95 1 19.1 12 30 12 30s11-10.9 11-19.05C23 4.9 18.15 0 12 0z"
+                fill="none" stroke="rgba(3,12,26,0.9)" stroke-width="5"/>
+              <path d="M12 0C5.85 0 1 4.9 1 10.95 1 19.1 12 30 12 30s11-10.9 11-19.05C23 4.9 18.15 0 12 0z"
+                fill="${color}" stroke="rgba(255,255,255,0.95)" stroke-width="1.6"/>
+              <circle cx="12" cy="10.8" r="4.6" fill="rgba(255,255,255,0.95)"/>
+              ${point.isCluster ? `<circle cx="12" cy="10.8" r="2" fill="${color}"/>` : ""}
             </svg>
           </div>
-          <div data-hit style="margin-top: 3px; background: ${city.__selected ? hexToRgba(status.color, 0.35) : "rgba(4, 10, 24, 0.88)"}; border: ${city.__selected ? 2 : 1}px solid ${status.color}; border-radius: 8px; padding: 3px 8px; font-size: 10.5px; font-weight: 600; color: #fff; white-space: nowrap;">
-            ${city.name} · <span style="color: ${status.color};">${city.people}</span>
+          <div data-hit style="margin-top: 2px; background: ${point.selected ? hexToRgba(color, 0.4) : "rgba(4, 10, 24, 0.9)"}; border: ${point.selected ? 2 : 1}px solid ${color}; border-radius: 8px; padding: 3px 8px; font-size: ${compact ? 10 : 11}px; font-weight: 600; color: #fff; white-space: nowrap;">
+            ${point.label} · <span style="color: ${BRAND.lightBlue};">${point.people}</span>
           </div>
         </div>`;
 
-      const tooltip = el.querySelector<HTMLElement>("[data-tooltip]")!;
-      const select = (e: Event) => {
-        e.stopPropagation();
-        onSelectCity(city.__selected ? null : { ...city });
-      };
+      const link = el.querySelector<HTMLElement>("[data-link]")!;
+      const [pinEl, chipEl] = [...el.querySelectorAll<HTMLElement>("[data-hit]")];
+      chips.current.set(point.key, {
+        pin: pinEl,
+        chip: chipEl,
+        link,
+        people: point.people,
+      });
+      relayoutChips();
+
       let downAt: [number, number] | null = null;
       el.querySelectorAll<HTMLElement>("[data-hit]").forEach((hit) => {
         hit.style.pointerEvents = "auto";
         hit.style.cursor = "pointer";
-        hit.addEventListener("pointerenter", () => (tooltip.style.display = "block"));
-        hit.addEventListener("pointerleave", () => (tooltip.style.display = "none"));
+        hit.addEventListener("pointerenter", () => showTooltip(point, pinEl));
+        hit.addEventListener("pointerleave", hideTooltip);
         hit.addEventListener("pointerdown", (e) => {
           downAt = [e.clientX, e.clientY];
           e.stopPropagation();
@@ -215,14 +409,41 @@ export default function GlobeView({
           if (!downAt) return;
           const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]);
           downAt = null;
-          if (moved < 12) select(e);
+          if (moved > 12) return;
+          e.stopPropagation();
+          if (!selected) {
+            // Vue monde : on ouvre la coordination
+            const target = COORDINATIONS.find((c) => c.id === point.key);
+            if (target) onSelect(target);
+            return;
+          }
+          // On récupère l'intendance d'origine pour conserver ses
+          // informations (dont l'appartenance à Abidjan, qui règle le zoom)
+          const real = selected.intendances.find((i) => i.name === point.name);
+          onSelectIntendance(
+            point.selected
+              ? null
+              : (real ?? {
+                  name: point.name,
+                  people: point.people,
+                  lat: point.lat,
+                  lng: point.lng,
+                  inAbidjan: point.isCluster,
+                })
+          );
         });
         hit.addEventListener("click", (e) => e.stopPropagation());
       });
       return el;
     },
-    [compactMarkers, onSelectCity]
+    [compact, selected, onSelect, onSelectIntendance, relayoutChips, showTooltip, hideTooltip]
   );
+
+  // Les marqueurs changent (autre coordination, regroupement d'Abidjan) :
+  // on repart d'une table propre.
+  useEffect(() => {
+    chips.current.clear();
+  }, [selected, markers.length]);
 
   return (
     <div ref={wrapperRef} className="absolute inset-0 cursor-grab active:cursor-grabbing">
@@ -239,30 +460,37 @@ export default function GlobeView({
           polygonsData={features}
           polygonAltitude={(f) => {
             const feature = f as CountryFeature;
-            if (feature.__country.id === selected?.id) return 0.004;
+            if (feature.__coordination.id === selected?.id) return 0.004;
             return f === hovered ? 0.03 : 0.012;
           }}
           polygonCapColor={(f) => {
             const feature = f as CountryFeature;
-            // Pays sélectionné : couleur retirée pour laisser voir
-            // la vue satellite, seul le contour reste
-            if (feature.__country.id === selected?.id) return "rgba(0, 0, 0, 0)";
-            const color = getStatus(feature.__country.people).color;
-            return hexToRgba(color, f === hovered ? 0.85 : 0.6);
+            // Coordination ouverte : couleur retirée pour laisser voir le fond
+            if (feature.__coordination.id === selected?.id) return "rgba(0, 0, 0, 0)";
+            return hexToRgba(
+              colorOf(feature.__coordination.people),
+              f === hovered ? 0.75 : 0.5
+            );
           }}
           polygonSideColor={() => "rgba(255, 255, 255, 0.08)"}
-          polygonStrokeColor={(f) =>
-            getStatus((f as CountryFeature).__country.people).color
-          }
+          polygonStrokeColor={(f) => colorOf((f as CountryFeature).__coordination.people)}
           polygonLabel={labelHtml}
           polygonsTransitionDuration={300}
           onPolygonHover={(f) => setHovered((f as CountryFeature) ?? null)}
-          onPolygonClick={(f) => onSelect((f as CountryFeature).__country)}
-          htmlElementsData={cityPoints}
-          htmlLat={(d) => (d as CityPoint).lat}
-          htmlLng={(d) => (d as CityPoint).lng}
+          onPolygonClick={(f) => onSelect((f as CountryFeature).__coordination)}
+          htmlElementsData={markers}
+          htmlLat={(d) => (d as MarkerPoint).lat}
+          htmlLng={(d) => (d as MarkerPoint).lng}
           htmlAltitude={0.005}
-          htmlElement={cityMarker}
+          htmlElement={marker}
+          onZoom={(pov) => {
+            // setState avec la même valeur : React n'effectue aucun rendu,
+            // les marqueurs ne sont donc pas reconstruits pendant la rotation
+            const next = pov.altitude > ABIDJAN_SPLIT_ALTITUDE;
+            setGrouped((prev) => (prev === next ? prev : next));
+            // La caméra a bougé : les étiquettes se réorganisent
+            relayoutChips();
+          }}
           onGlobeReady={() => {
             const globe = globeRef.current;
             if (!globe) return;
@@ -281,6 +509,13 @@ export default function GlobeView({
           }}
         />
       )}
+
+      {/* Infobulle : au-dessus de tous les marqueurs */}
+      <div
+        ref={tooltipRef}
+        className="pointer-events-none absolute z-30 max-w-56 rounded-[10px] border bg-[#050f23]/95 px-3 py-2 text-[#e8f4fd] backdrop-blur-sm"
+        style={{ display: "none", borderColor: BRAND.blue }}
+      />
     </div>
   );
 }

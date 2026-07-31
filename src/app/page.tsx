@@ -2,19 +2,20 @@
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import Legend from "@/components/Legend";
-import CoordinationCard from "@/components/CoordinationCard";
+import PlaceCard from "@/components/PlaceCard";
 import Overview from "@/components/Overview";
 import {
-  COLOR_CODING,
-  COORDINATIONS,
-  CoordinationWithTotal,
-  Intendance,
+  AUTO_EXPAND_ALTITUDE,
+  Place,
   TOTAL_MEMBERS,
   UNASSIGNED,
+  WORLD,
+  childrenOf,
   colorOf,
+  labelOf,
 } from "@/data/network";
 import { DEFAULT_STYLE, MAP_STYLES, MapStyle } from "@/data/mapStyles";
 
@@ -29,19 +30,36 @@ const GlobeView = dynamic(() => import("@/components/GlobeView"), {
 });
 
 export default function Home() {
-  const [selected, setSelected] = useState<CoordinationWithTotal | null>(null);
-  const [selectedIntendance, setSelectedIntendance] = useState<Intendance | null>(null);
+  /** Chemin de navigation : [] = monde, [Afrique], [Afrique, Côte d'Ivoire]… */
+  const [path, setPath] = useState<Place[]>([]);
+  const [focus, setFocus] = useState<Place | null>(null);
   const [showLegend, setShowLegend] = useState(false);
   const [showOverview, setShowOverview] = useState(false);
   const [mapStyle, setMapStyle] = useState<MapStyle>(DEFAULT_STYLE);
   const [showStyles, setShowStyles] = useState(false);
-  const sorted = [...COORDINATIONS].sort((a, b) => b.people - a.people);
 
-  // Changer de coordination (ou revenir à la vue globale) réinitialise l'intendance.
-  // Identité stable : sinon le globe reconstruit tous ses marqueurs à chaque rendu.
-  const selectCoordination = useCallback((coordination: CoordinationWithTotal | null) => {
-    setSelected(coordination);
-    setSelectedIntendance(null);
+  const current = path[path.length - 1] ?? WORLD;
+  const listed = useMemo(
+    () => childrenOf(current, { expanded: current.altitude <= AUTO_EXPAND_ALTITUDE }),
+    [current]
+  );
+  const sorted = useMemo(
+    () => [...listed].sort((a, b) => b.people - a.people),
+    [listed]
+  );
+  const scale = sorted[0]?.people ?? 1;
+
+  /** Descendre d'un niveau. Identité stable : sinon le globe reconstruit
+   *  tous ses marqueurs à chaque rendu. */
+  const openPlace = useCallback((place: Place) => {
+    setPath((p) => [...p, place]);
+    setFocus(null);
+  }, []);
+
+  /** Remonter au niveau `depth` (0 = monde) */
+  const goTo = useCallback((depth: number) => {
+    setPath((p) => p.slice(0, depth));
+    setFocus(null);
   }, []);
 
   return (
@@ -72,19 +90,22 @@ export default function Home() {
 
       {/* Sidebar — tablette et desktop */}
       <Sidebar
-        selected={selected}
-        selectedIntendance={selectedIntendance}
-        onSelect={selectCoordination}
-        onSelectIntendance={setSelectedIntendance}
+        path={path}
+        current={current}
+        children_={listed}
+        focus={focus}
+        onOpen={openPlace}
+        onFocus={setFocus}
+        onGoTo={goTo}
       />
 
       <section className="relative min-h-0 flex-1">
         <GlobeView
-          selected={selected}
-          selectedIntendance={selectedIntendance}
+          current={current}
+          focus={focus}
           mapStyle={mapStyle}
-          onSelect={selectCoordination}
-          onSelectIntendance={setSelectedIntendance}
+          onOpen={openPlace}
+          onFocus={setFocus}
         />
 
         {/* Boutons fond de carte + aperçu + légende */}
@@ -106,18 +127,16 @@ export default function Home() {
           >
             🗺️ <span className="hidden sm:inline">Voir l&apos;</span>aperçu
           </button>
-          {COLOR_CODING && (
-            <button
-              onClick={() => setShowLegend((v) => !v)}
-              className={`rounded-full border px-3 py-1.5 text-xs font-semibold backdrop-blur-md transition-colors md:hidden ${
-                showLegend
-                  ? "border-[#29ABE2] bg-[#29ABE2]/25 text-white"
-                  : "border-white/20 bg-[#040a18]/80 text-white/85"
-              }`}
-            >
-              Légende
-            </button>
-          )}
+          <button
+            onClick={() => setShowLegend((v) => !v)}
+            className={`rounded-full border px-3 py-1.5 text-xs font-semibold backdrop-blur-md transition-colors md:hidden ${
+              showLegend
+                ? "border-[#29ABE2] bg-[#29ABE2]/25 text-white"
+                : "border-white/20 bg-[#040a18]/80 text-white/85"
+            }`}
+          >
+            Légende
+          </button>
         </div>
 
         {/* Choix du fond de carte */}
@@ -158,66 +177,69 @@ export default function Home() {
           </div>
         )}
 
-        {/* Détail de la coordination — mobile */}
-        {selected && (
-          <div className="absolute top-14 right-3 left-3 z-10 rounded-2xl border border-[#29ABE2]/50 bg-[#040a18]/90 p-3 text-xs backdrop-blur-md md:hidden">
+        {/* Fil d'Ariane + niveau courant — mobile */}
+        {path.length > 0 && (
+          <div
+            className="absolute top-14 right-3 left-3 z-10 rounded-2xl border bg-[#040a18]/90 p-3 text-xs backdrop-blur-md md:hidden"
+            style={{ borderColor: `${colorOf(current.evaluation)}88` }}
+          >
+            <div className="mb-1 flex flex-wrap items-center gap-x-1.5 text-[10px]">
+              <button onClick={() => goTo(0)} className="text-sky-200/70">
+                🌍 Monde
+              </button>
+              {path.map((place, i) => (
+                <span key={place.id} className="flex items-center gap-1.5">
+                  <span className="text-white/30">›</span>
+                  {i === path.length - 1 ? (
+                    <span className="font-semibold text-white">{place.name}</span>
+                  ) : (
+                    <button onClick={() => goTo(i + 1)} className="text-sky-200/70">
+                      {place.name}
+                    </button>
+                  )}
+                </span>
+              ))}
+            </div>
             <div className="flex items-baseline justify-between gap-2">
-              <p className="font-bold text-white">{selected.name}</p>
+              <p className="font-bold text-white">{current.name}</p>
               <p className="shrink-0 font-bold text-[#4db8ff]">
-                {selected.people} <span className="text-[10px] text-white/50">membres</span>
+                {current.people} <span className="text-[10px] text-white/50">membres</span>
               </p>
             </div>
-            {selected.intendances.length > 0 ? (
-              <div className="mt-1.5 flex max-h-20 flex-wrap gap-1.5 overflow-y-auto border-t border-white/10 pt-1.5">
-                {[...selected.intendances]
-                  .sort((a, b) => b.people - a.people)
-                  .map((intendance) => {
-                    const isActive = selectedIntendance?.name === intendance.name;
-                    const color = colorOf(intendance.people);
-                    return (
-                      <button
-                        key={intendance.name}
-                        onClick={() => setSelectedIntendance(isActive ? null : intendance)}
-                        className="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold text-white/90"
-                        style={{
-                          borderColor: isActive ? color : `${color}88`,
-                          backgroundColor: isActive ? `${color}40` : "transparent",
-                        }}
-                      >
-                        {intendance.name}
-                        <span style={{ color }}>{intendance.people}</span>
-                      </button>
-                    );
-                  })}
-              </div>
-            ) : (
-              <p className="mt-1 text-white/55">
-                {selected.subtitle ?? "Pas encore de découpage par intendance."}
-              </p>
-            )}
+            <p
+              className="mt-0.5 font-semibold"
+              style={{ color: colorOf(current.evaluation) }}
+            >
+              {labelOf(current.evaluation) ?? "Pas encore évaluée"}
+            </p>
             <button
-              onClick={() => selectCoordination(null)}
+              onClick={() => goTo(path.length - 1)}
               className="mt-1.5 rounded-lg border border-white/20 px-2.5 py-1 text-[11px] text-white/80"
             >
-              ← Vue globale
+              ← {path.length > 1 ? path[path.length - 2].name : "Vue globale"}
             </button>
           </div>
         )}
 
-        {/* Bande de coordinations défilante — mobile */}
-        <div className="absolute inset-x-0 bottom-0 z-10 flex snap-x gap-2 overflow-x-auto p-3 md:hidden">
-          {sorted.map((coordination) => (
-            <CoordinationCard
-              key={coordination.id}
-              coordination={coordination}
-              compact
-              selected={selected?.id === coordination.id}
-              onClick={() =>
-                selectCoordination(selected?.id === coordination.id ? null : coordination)
-              }
-            />
-          ))}
-        </div>
+        {/* Bande des sous-unités — mobile */}
+        {sorted.length > 0 && (
+          <div className="absolute inset-x-0 bottom-0 z-10 flex snap-x gap-2 overflow-x-auto p-3 md:hidden">
+            {sorted.map((place) => (
+              <PlaceCard
+                key={place.id}
+                place={place}
+                scale={scale}
+                compact
+                selected={focus?.id === place.id}
+                onClick={() =>
+                  place.children?.length
+                    ? openPlace(place)
+                    : setFocus(focus?.id === place.id ? null : place)
+                }
+              />
+            ))}
+          </div>
+        )}
 
         {/* Textes lisibles aussi bien sur fond sombre que sur fond clair */}
         <p
@@ -227,7 +249,7 @@ export default function Home() {
         >
           {UNASSIGNED > 0
             ? `${UNASSIGNED} membres restent à rattacher à une coordination`
-            : "Cliquez sur une coordination, puis sur une intendance pour zoomer"}
+            : "Cliquez sur un repère pour descendre d'un niveau"}
         </p>
 
         <p
@@ -240,10 +262,7 @@ export default function Home() {
       </section>
 
       {showOverview && (
-        <Overview
-          initialCoordinationId={selected?.id ?? null}
-          onClose={() => setShowOverview(false)}
-        />
+        <Overview initialPlaceId={current.id} onClose={() => setShowOverview(false)} />
       )}
     </main>
   );

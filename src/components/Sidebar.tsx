@@ -2,33 +2,41 @@
 
 import Image from "next/image";
 import {
-  COORDINATIONS,
-  CoordinationWithTotal,
-  Intendance,
   LISTED_PEOPLE,
-  MAX_PEOPLE,
+  Place,
   TOTAL_MEMBERS,
   UNASSIGNED,
+  WORLD,
   colorOf,
-  shareOf,
+  labelOf,
+  unitsLabel,
 } from "@/data/network";
-import CoordinationCard from "./CoordinationCard";
+import PlaceCard from "./PlaceCard";
 import Legend from "./Legend";
 
 type SidebarProps = {
-  selected: CoordinationWithTotal | null;
-  selectedIntendance: Intendance | null;
-  onSelect: (coordination: CoordinationWithTotal | null) => void;
-  onSelectIntendance: (intendance: Intendance | null) => void;
+  /** Chemin depuis le monde jusqu'au niveau affiché */
+  path: Place[];
+  current: Place;
+  children_: Place[];
+  focus: Place | null;
+  onOpen: (place: Place) => void;
+  onFocus: (place: Place | null) => void;
+  onGoTo: (depth: number) => void;
 };
 
 export default function Sidebar({
-  selected,
-  selectedIntendance,
-  onSelect,
-  onSelectIntendance,
+  path,
+  current,
+  children_,
+  focus,
+  onOpen,
+  onFocus,
+  onGoTo,
 }: SidebarProps) {
-  const sorted = [...COORDINATIONS].sort((a, b) => b.people - a.people);
+  const sorted = [...children_].sort((a, b) => b.people - a.people);
+  const scale = sorted[0]?.people ?? 1;
+  const isWorld = current.id === WORLD.id;
 
   return (
     <aside className="hidden h-full shrink-0 flex-col gap-4 overflow-y-auto border-r border-white/10 bg-[#040a18]/95 p-4 md:flex md:w-76 lg:w-90">
@@ -66,96 +74,90 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* Détail de la coordination ouverte */}
-      {selected && (
-        <div className="rounded-2xl border border-[#29ABE2]/40 bg-[#29ABE2]/10 p-3 text-sm">
+      {/* Fil d'Ariane */}
+      {!isWorld && (
+        <nav className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
+          <button
+            onClick={() => onGoTo(0)}
+            className="text-sky-200/70 transition-colors hover:text-white"
+          >
+            🌍 Monde
+          </button>
+          {path.map((place, i) => (
+            <span key={place.id} className="flex items-center gap-1.5">
+              <span className="text-white/30">›</span>
+              {i === path.length - 1 ? (
+                <span className="font-semibold text-white">{place.name}</span>
+              ) : (
+                <button
+                  onClick={() => onGoTo(i + 1)}
+                  className="text-sky-200/70 transition-colors hover:text-white"
+                >
+                  {place.name}
+                </button>
+              )}
+            </span>
+          ))}
+        </nav>
+      )}
+
+      {/* Détail du niveau courant */}
+      {!isWorld && (
+        <div
+          className="rounded-2xl border p-3 text-sm"
+          style={{
+            borderColor: `${colorOf(current.evaluation)}66`,
+            backgroundColor: `${colorOf(current.evaluation)}1a`,
+          }}
+        >
           <div className="flex items-baseline justify-between gap-2">
-            <p className="font-bold text-white">{selected.name}</p>
+            <p className="font-bold text-white">{current.name}</p>
             <p className="shrink-0 font-bold text-[#4db8ff]">
-              {selected.people}{" "}
+              {current.people}{" "}
               <span className="text-[11px] font-normal text-white/50">membres</span>
             </p>
           </div>
-
-          {selected.intendances.length > 0 ? (
-            <>
-              <p className="mt-0.5 text-[11px] text-white/55">
-                {selected.intendances.length} intendances — cliquez pour zoomer
-              </p>
-              <ul className="mt-2 space-y-0.5 border-t border-white/10 pt-2">
-                {[...selected.intendances]
-                  .sort((a, b) => b.people - a.people)
-                  .map((intendance) => {
-                    const isActive = selectedIntendance?.name === intendance.name;
-                    const color = colorOf(intendance.people);
-                    return (
-                      <li key={intendance.name}>
-                        <button
-                          onClick={() => onSelectIntendance(isActive ? null : intendance)}
-                          className={`w-full rounded-lg px-1.5 py-1 transition-colors ${
-                            isActive ? "bg-white/15" : "hover:bg-white/10"
-                          }`}
-                        >
-                          <div className="flex items-baseline gap-2 text-xs">
-                            <span className="min-w-0 flex-1 truncate text-left text-white/90">
-                              {intendance.name}
-                              {isActive && <span className="ml-1 text-white/50">🔍</span>}
-                            </span>
-                            <span className="shrink-0 font-bold" style={{ color }}>
-                              {intendance.people}
-                            </span>
-                          </div>
-                          <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-white/10">
-                            <div
-                              className="h-full rounded-full"
-                              style={{
-                                width: `${Math.max(3, (intendance.people / MAX_PEOPLE) * 100)}%`,
-                                backgroundColor: color,
-                              }}
-                            />
-                          </div>
-                        </button>
-                      </li>
-                    );
-                  })}
-              </ul>
-            </>
-          ) : (
-            <p className="mt-1 text-[11px] text-white/55">
-              {selected.subtitle ?? "Pas encore de découpage par intendance."}
-            </p>
-          )}
-
+          <p
+            className="mt-0.5 text-xs font-semibold"
+            style={{ color: colorOf(current.evaluation) }}
+          >
+            {labelOf(current.evaluation) ?? "Pas encore évaluée"}
+          </p>
           <button
-            onClick={() => onSelect(null)}
+            onClick={() => onGoTo(path.length - 1)}
             className="mt-2 rounded-lg border border-white/20 px-3 py-1 text-xs text-white/80 transition-colors hover:bg-white/10"
           >
-            ← Vue globale
+            ← {path.length > 1 ? path[path.length - 2].name : "Vue globale"}
           </button>
         </div>
       )}
 
-      {/* Liste des coordinations */}
-      <div className="flex flex-col gap-2.5">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-xs font-bold tracking-widest text-sky-200/80 uppercase">
-            Coordinations
-          </h2>
-          <span className="text-[10px] text-white/40">
-            {Math.round(shareOf(LISTED_PEOPLE) * 100)} % de l&apos;effectif
-          </span>
+      {/* Sous-unités du niveau courant */}
+      {sorted.length > 0 && (
+        <div className="flex flex-col gap-2.5">
+          <div className="flex items-baseline justify-between gap-2">
+            <h2 className="text-xs font-bold tracking-widest text-sky-200/80 uppercase">
+              {current.unitLabel?.many ?? "sous-unités"}
+            </h2>
+            <span className="shrink-0 text-[10px] text-white/40">
+              {unitsLabel(current, sorted.length)}
+            </span>
+          </div>
+          {sorted.map((place) => (
+            <PlaceCard
+              key={place.id}
+              place={place}
+              scale={scale}
+              selected={focus?.id === place.id}
+              onClick={() =>
+                place.children?.length
+                  ? onOpen(place)
+                  : onFocus(focus?.id === place.id ? null : place)
+              }
+            />
+          ))}
         </div>
-        {sorted.map((coordination) => (
-          <CoordinationCard
-            key={coordination.id}
-            coordination={coordination}
-            selected={selected?.id === coordination.id}
-            onClick={() =>
-              onSelect(selected?.id === coordination.id ? null : coordination)
-            }
-          />
-        ))}
-      </div>
+      )}
 
       <div className="mt-auto">
         <Legend />

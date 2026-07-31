@@ -3,50 +3,35 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Globe, { GlobeMethods } from "react-globe.gl";
 import {
-  ABIDJAN_SPLIT_ALTITUDE,
+  AUTO_EXPAND_ALTITUDE,
   BRAND,
-  COORDINATIONS,
-  CoordinationWithTotal,
-  Intendance,
+  CONTINENT_PLACES,
+  PLACES_WITH_ISO,
+  Place,
+  WORLD,
+  childrenOf,
   colorOf,
-  intendancesOf,
+  labelOf,
   mapLabel,
-  shareOf,
+  pathTo,
+  unitsLabel,
 } from "@/data/network";
 import { MapStyle } from "@/data/mapStyles";
 
 type CountryFeature = {
-  properties: { ADM0_A3: string; ADMIN: string };
-  __coordination: CoordinationWithTotal;
-};
-
-/** Un point posé sur le globe : coordination (vue monde) ou intendance */
-type MarkerPoint = {
-  key: string;
-  name: string;
-  /** Nom court affiché sur l'étiquette de la carte */
-  label: string;
-  people: number;
-  lat: number;
-  lng: number;
-  selected: boolean;
-  /** Regroupement des communes d'Abidjan : cliquer rapproche la caméra */
-  isCluster?: boolean;
+  properties: { ADM0_A3: string; ADMIN: string; CONTINENT: string };
+  __place: Place;
 };
 
 type GlobeViewProps = {
-  selected: CoordinationWithTotal | null;
-  selectedIntendance: Intendance | null;
+  /** Lieu dont on affiche les sous-unités (Monde par défaut) */
+  current: Place;
+  /** Sous-unité mise en avant (feuille sur laquelle on a zoomé) */
+  focus: Place | null;
   mapStyle: MapStyle;
-  onSelect: (coordination: CoordinationWithTotal | null) => void;
-  onSelectIntendance: (intendance: Intendance | null) => void;
+  onOpen: (place: Place) => void;
+  onFocus: (place: Place | null) => void;
 };
-
-const INITIAL_VIEW = { lat: 15, lng: -10, altitude: 2.2 };
-/** Altitude de la caméra lors du zoom sur une intendance */
-const INTENDANCE_ALTITUDE = 0.07;
-/** Les communes d'Abidjan sont petites et proches : on descend plus bas */
-const COMMUNE_ALTITUDE = 0.018;
 
 // Sur écran étroit (portrait), on recule la caméra pour que
 // le globe et les pays restent entièrement visibles.
@@ -74,11 +59,11 @@ const shift = (r: Rect, dx: number, dy: number): Rect => ({
 });
 
 export default function GlobeView({
-  selected,
-  selectedIntendance,
+  current,
+  focus,
   mapStyle,
-  onSelect,
-  onSelectIntendance,
+  onOpen,
+  onFocus,
 }: GlobeViewProps) {
   const globeRef = useRef<GlobeMethods | undefined>(undefined);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -86,7 +71,7 @@ export default function GlobeView({
   const chips = useRef(
     new Map<
       string,
-      { pin: HTMLElement; chip: HTMLElement; link: HTMLElement; people: number }
+      { pin: HTMLElement; chip: HTMLElement; link: HTMLElement; rank: number }
     >()
   );
   const relayoutFrame = useRef(0);
@@ -97,16 +82,17 @@ export default function GlobeView({
    */
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const hoveredPin = useRef<HTMLElement | null>(null);
+
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [features, setFeatures] = useState<CountryFeature[]>([]);
   const [hovered, setHovered] = useState<CountryFeature | null>(null);
   /**
    * On ne suit PAS l'altitude exacte : elle change en permanence pendant
    * la rotation, ce qui recréait tous les marqueurs à chaque image (effet
-   * de clignotement). On ne retient que l'information utile : les communes
-   * d'Abidjan sont-elles regroupées ou non.
+   * de clignotement). On ne retient que l'information utile : les nœuds
+   * repliables sont-ils dépliés ou non.
    */
-  const [grouped, setGrouped] = useState(true);
+  const [expanded, setExpanded] = useState(false);
 
   // Adapte le canvas à la taille du conteneur
   useEffect(() => {
@@ -137,83 +123,70 @@ export default function GlobeView({
     globe.pointOfView({ ...pov, altitude: pov.altitude * 1.0002 }, 0);
   }, [mapStyle]);
 
-  // Charge les frontières et ne garde que les coordinations tracées
+  // Charge les frontières : pays suivis + continents entiers (Afrique)
   useEffect(() => {
     fetch("/data/countries.geojson")
       .then((res) => res.json())
-      .then((geojson: { features: { properties: { ADM0_A3: string } }[] }) => {
-        const byIso = new Map(
-          COORDINATIONS.filter((c) => c.iso).map((c) => [c.iso!, c])
-        );
-        const tracked = geojson.features
-          .filter((f) => byIso.has(f.properties.ADM0_A3))
-          .map((f) => ({ ...f, __coordination: byIso.get(f.properties.ADM0_A3)! }));
-        setFeatures(tracked as CountryFeature[]);
-      });
+      .then(
+        (geojson: { features: { properties: CountryFeature["properties"] }[] }) => {
+          const byIso = new Map(PLACES_WITH_ISO.map((p) => [p.iso!, p]));
+          const byContinent = new Map(
+            CONTINENT_PLACES.map((p) => [p.continent!, p])
+          );
+          const tracked = geojson.features
+            .map((f) => ({
+              ...f,
+              __place:
+                byIso.get(f.properties.ADM0_A3) ??
+                byContinent.get(f.properties.CONTINENT),
+            }))
+            .filter((f) => f.__place);
+          setFeatures(tracked as CountryFeature[]);
+        }
+      );
   }, []);
 
-  // Zoom animé : intendance > coordination > vue globale
+  // Zoom animé sur le niveau courant, ou sur la sous-unité mise en avant
   useEffect(() => {
     const globe = globeRef.current;
     if (!globe) return;
     const controls = globe.controls();
+    const target = focus ?? current;
+    const isWorld = !focus && current.id === "world";
+    controls.autoRotate = isWorld;
     const factor = aspectFactor(wrapperRef.current);
-    if (selectedIntendance) {
-      controls.autoRotate = false;
-      globe.pointOfView(
-        {
-          lat: selectedIntendance.lat,
-          lng: selectedIntendance.lng,
-          // Une commune d'Abidjan : on zoome nettement plus près
-          altitude:
-            selectedIntendance.inAbidjan && selectedIntendance.name !== "Abidjan"
-              ? COMMUNE_ALTITUDE
-              : INTENDANCE_ALTITUDE,
-        },
-        1200
-      );
-    } else if (selected) {
-      controls.autoRotate = false;
-      globe.pointOfView(
-        {
-          lat: selected.lat,
-          lng: selected.lng,
-          altitude: selected.altitude * (factor > 1 ? 0.9 : 1),
-        },
-        1200
-      );
-    } else {
-      globe.pointOfView({ ...INITIAL_VIEW, altitude: INITIAL_VIEW.altitude * factor }, 1200);
-      controls.autoRotate = true;
-    }
-  }, [selected, selectedIntendance]);
+    globe.pointOfView(
+      {
+        lat: target.lat,
+        lng: target.lng,
+        altitude: target.altitude * (isWorld ? factor : factor > 1 ? 0.9 : 1),
+      },
+      1200
+    );
+  }, [current, focus]);
 
-  // Vue monde : une pastille par coordination.
-  // Coordination ouverte : ses intendances, Abidjan regroupé tant qu'on
-  // n'est pas assez près pour distinguer ses communes.
-  const markers = useMemo<MarkerPoint[]>(() => {
-    if (!selected) {
-      return COORDINATIONS.map((c) => ({
-        key: c.id,
-        name: c.name,
-        label: c.name,
-        people: c.people,
-        lat: c.lat,
-        lng: c.lng,
-        selected: false,
-      }));
+  /** Sous-unités affichées, dépliées si la caméra est assez proche */
+  const markers = useMemo(
+    () => childrenOf(current, { expanded }),
+    [current, expanded]
+  );
+
+  /**
+   * Chaque pays tracé hérite de la couleur et des infos du repère qui le
+   * représente au niveau courant : au niveau monde, toute l'Afrique porte
+   * la couleur de la coordination « Afrique », pas celle de chaque pays.
+   * Sans représentant (on a zoomé à l'intérieur), le pays reste transparent
+   * pour laisser voir le terrain.
+   */
+  const ownerOf = useMemo(() => {
+    const map = new Map<string, Place>();
+    for (const p of [...PLACES_WITH_ISO, ...CONTINENT_PLACES]) {
+      const trail = pathTo(p.id);
+      const owner = markers.find((m) => trail.some((t) => t.id === m.id));
+      if (owner) map.set(p.id, owner);
     }
-    return intendancesOf(selected, { grouped }).map((i) => ({
-      key: i.name,
-      name: i.name,
-      label: mapLabel(i),
-      people: i.people,
-      lat: i.lat,
-      lng: i.lng,
-      selected: selectedIntendance?.name === i.name,
-      isCluster: grouped && i.name === "Abidjan",
-    }));
-  }, [selected, selectedIntendance, grouped]);
+    return map;
+  }, [markers]);
 
   /** Colle l'infobulle au-dessus du repère survolé */
   const positionTooltip = useCallback(() => {
@@ -233,16 +206,42 @@ export default function GlobeView({
   }, []);
 
   const showTooltip = useCallback(
-    (point: MarkerPoint, pin: HTMLElement) => {
+    (place: Place, pin: HTMLElement) => {
       const tip = tooltipRef.current;
       if (!tip) return;
+      const color = colorOf(place.evaluation);
+      const evaluation = labelOf(place.evaluation);
+      const units = place.children?.length
+        ? unitsLabel(place, place.children.length)
+        : null;
       hoveredPin.current = pin;
-      tip.style.borderColor = colorOf(point.people);
+      tip.style.borderColor = color;
+      // Détail des sous-unités (5 premières), comme dans la barre latérale
+      const rows = (place.children ?? [])
+        .slice(0, 5)
+        .map(
+          (c) => `
+            <div style="display: flex; align-items: center; gap: 7px; font-size: 11px; margin-top: 3px;">
+              <span style="width: 7px; height: 7px; border-radius: 50%; background: ${colorOf(c.evaluation)}; flex-shrink: 0;"></span>
+              <span style="flex: 1;">${c.name}</span>
+              <span style="color: ${BRAND.lightBlue}; font-weight: 700;">${c.people}</span>
+            </div>`
+        )
+        .join("");
+      const more =
+        (place.children?.length ?? 0) > 5
+          ? `<div style="font-size: 10px; color: rgba(232,244,253,0.5); margin-top: 4px;">+ ${place.children!.length - 5} autres</div>`
+          : "";
       tip.innerHTML = `
-        <div style="font-weight: 700; font-size: 13px;">${point.name}</div>
-        <div style="font-size: 12px; margin-top: 2px;">👥 ${point.people} membres</div>
-        <div style="font-size: 11px; margin-top: 2px; color: rgba(232,244,253,0.6);">${Math.round(shareOf(point.people) * 100)} % de l'effectif total</div>
-        ${point.isCluster ? `<div style="font-size: 10.5px; margin-top: 4px; color: ${BRAND.gold};">Cliquez pour voir les communes</div>` : ""}`;
+        <div style="font-weight: 700; font-size: 13px;">${place.name}</div>
+        <div style="font-size: 12px; margin-top: 2px;">👥 ${place.people} membres</div>
+        ${
+          evaluation
+            ? `<div style="font-size: 11.5px; font-weight: 600; margin-top: 5px; color: ${color};">● ${evaluation}</div>`
+            : `<div style="font-size: 11px; margin-top: 5px; color: rgba(232,244,253,0.45);">Pas encore évaluée</div>`
+        }
+        ${rows ? `<div style="border-top: 1px solid rgba(255,255,255,0.15); margin-top: 6px; padding-top: 3px;">${rows}${more}</div>` : ""}
+        ${units ? `<div style="font-size: 10.5px; margin-top: 5px; color: ${BRAND.gold};">Cliquez pour voir les ${place.unitLabel?.many ?? "sous-unités"}</div>` : ""}`;
       tip.style.display = "block";
       positionTooltip();
     },
@@ -257,7 +256,7 @@ export default function GlobeView({
   /**
    * Écarte les étiquettes qui se chevauchent à l'écran. On mesure leur
    * position réelle puis on décale les plus petites : les grosses
-   * intendances gardent la place sous leur repère.
+   * entités gardent la place sous leur repère.
    */
   const relayoutChips = useCallback(() => {
     cancelAnimationFrame(relayoutFrame.current);
@@ -269,6 +268,7 @@ export default function GlobeView({
       };
       if (entries.length < 2) {
         entries.forEach(reset);
+        positionTooltip();
         return;
       }
       entries.forEach(reset);
@@ -276,7 +276,7 @@ export default function GlobeView({
       const taken: Rect[] = entries.map((e) => e.pin.getBoundingClientRect());
       // Les plus gros effectifs choisissent leur place en premier
       [...entries]
-        .sort((a, b) => b.people - a.people)
+        .sort((a, b) => b.rank - a.rank)
         .forEach((entry) => {
           const base = entry.chip.getBoundingClientRect();
           const w = base.width;
@@ -325,44 +325,22 @@ export default function GlobeView({
     });
   }, [positionTooltip]);
 
-  const labelHtml = useMemo(
-    () => (feature: object) => {
-      const c = (feature as CountryFeature).__coordination;
-      // Coordination déjà ouverte : ce sont les survols des intendances
-      // qui donnent le détail
-      if (c.id === selected?.id) return "";
-      const rows = c.intendances
-        .slice(0, 5)
-        .map(
-          (i) => `
-            <div style="display: flex; gap: 10px; font-size: 11px; margin-top: 3px;">
-              <span style="flex: 1;">${i.name}</span>
-              <span style="color: ${BRAND.lightBlue}; font-weight: 700;">${i.people}</span>
-            </div>`
-        )
-        .join("");
-      const more =
-        c.intendances.length > 5
-          ? `<div style="font-size: 10px; color: rgba(232,244,253,0.5); margin-top: 4px;">+ ${c.intendances.length - 5} autres intendances</div>`
-          : "";
-      return `
-        <div style="background: rgba(5, 15, 35, 0.94); border: 1px solid ${BRAND.blue}; border-radius: 10px; padding: 8px 12px; font-family: inherit; color: #e8f4fd; max-width: 230px;">
-          <div style="font-weight: 700; font-size: 14px;">${c.name}</div>
-          <div style="font-size: 13px; margin-top: 2px;">👥 ${c.people} membres <span style="color: rgba(232,244,253,0.55);">· ${Math.round(shareOf(c.people) * 100)} %</span></div>
-          ${rows ? `<div style="border-top: 1px solid rgba(255,255,255,0.15); margin-top: 6px; padding-top: 3px;">${rows}${more}</div>` : ""}
-        </div>`;
-    },
-    [selected]
-  );
 
-  // Marqueur : la taille traduit l'effectif (surface proportionnelle).
+  // Marqueur : taille fixe (des repères proportionnels masquaient les pays).
   // Cliquable, avec une infobulle au survol.
   const compact = size.width > 0 && size.width < 480;
   const marker = useMemo(
     () => (data: object) => {
-      const point = data as MarkerPoint;
-      const color = colorOf(point.people);
-      // Taille fixe : des repères proportionnels masquaient les pays
+      const place = data as Place;
+      const color = colorOf(place.evaluation);
+      const isSelected = focus?.id === place.id;
+      const hasChildren = !!place.children?.length;
+      // Seule l'Afrique (continent entier) affiche « 6 pays » : les pays et
+      // les villes montrent leur effectif
+      const units =
+        place.continent && hasChildren
+          ? unitsLabel(place, place.children!.length)
+          : null;
       const pin = compact ? 18 : 22;
       const el = document.createElement("div");
       el.style.pointerEvents = "none";
@@ -377,21 +355,21 @@ export default function GlobeView({
               <path d="M12 0C5.85 0 1 4.9 1 10.95 1 19.1 12 30 12 30s11-10.9 11-19.05C23 4.9 18.15 0 12 0z"
                 fill="${color}" stroke="rgba(255,255,255,0.95)" stroke-width="1.6"/>
               <circle cx="12" cy="10.8" r="4.6" fill="rgba(255,255,255,0.95)"/>
-              ${point.isCluster ? `<circle cx="12" cy="10.8" r="2" fill="${color}"/>` : ""}
+              ${hasChildren ? `<circle cx="12" cy="10.8" r="2" fill="${color}"/>` : ""}
             </svg>
           </div>
-          <div data-hit style="margin-top: 2px; background: ${point.selected ? hexToRgba(color, 0.4) : "rgba(4, 10, 24, 0.9)"}; border: ${point.selected ? 2 : 1}px solid ${color}; border-radius: 8px; padding: 3px 8px; font-size: ${compact ? 10 : 11}px; font-weight: 600; color: #fff; white-space: nowrap;">
-            ${point.label} · <span style="color: ${BRAND.lightBlue};">${point.people}</span>
+          <div data-hit style="margin-top: 2px; background: ${isSelected ? hexToRgba(color, 0.4) : "rgba(4, 10, 24, 0.9)"}; border: ${isSelected ? 2 : 1}px solid ${color}; border-radius: 8px; padding: 3px 8px; font-size: ${compact ? 10 : 11}px; font-weight: 600; color: #fff; white-space: nowrap;">
+            ${mapLabel(place)} · ${units ? `<span style="color: ${BRAND.gold};">${units}</span>` : `<span style="color: ${BRAND.lightBlue};">${place.people}</span>`}
           </div>
         </div>`;
 
       const link = el.querySelector<HTMLElement>("[data-link]")!;
       const [pinEl, chipEl] = [...el.querySelectorAll<HTMLElement>("[data-hit]")];
-      chips.current.set(point.key, {
+      chips.current.set(place.id, {
         pin: pinEl,
         chip: chipEl,
         link,
-        people: point.people,
+        rank: place.people,
       });
       relayoutChips();
 
@@ -399,7 +377,7 @@ export default function GlobeView({
       el.querySelectorAll<HTMLElement>("[data-hit]").forEach((hit) => {
         hit.style.pointerEvents = "auto";
         hit.style.cursor = "pointer";
-        hit.addEventListener("pointerenter", () => showTooltip(point, pinEl));
+        hit.addEventListener("pointerenter", () => showTooltip(place, pinEl));
         hit.addEventListener("pointerleave", hideTooltip);
         hit.addEventListener("pointerdown", (e) => {
           downAt = [e.clientX, e.clientY];
@@ -411,39 +389,24 @@ export default function GlobeView({
           downAt = null;
           if (moved > 12) return;
           e.stopPropagation();
-          if (!selected) {
-            // Vue monde : on ouvre la coordination
-            const target = COORDINATIONS.find((c) => c.id === point.key);
-            if (target) onSelect(target);
-            return;
-          }
-          // On récupère l'intendance d'origine pour conserver ses
-          // informations (dont l'appartenance à Abidjan, qui règle le zoom)
-          const real = selected.intendances.find((i) => i.name === point.name);
-          onSelectIntendance(
-            point.selected
-              ? null
-              : (real ?? {
-                  name: point.name,
-                  people: point.people,
-                  lat: point.lat,
-                  lng: point.lng,
-                  inAbidjan: point.isCluster,
-                })
-          );
+          hideTooltip();
+          // Un lieu qui a des sous-unités : on descend d'un niveau.
+          // Sinon on zoome simplement dessus.
+          if (hasChildren) onOpen(place);
+          else onFocus(isSelected ? null : place);
         });
         hit.addEventListener("click", (e) => e.stopPropagation());
       });
       return el;
     },
-    [compact, selected, onSelect, onSelectIntendance, relayoutChips, showTooltip, hideTooltip]
+    [compact, focus, onOpen, onFocus, relayoutChips, showTooltip, hideTooltip]
   );
 
-  // Les marqueurs changent (autre coordination, regroupement d'Abidjan) :
-  // on repart d'une table propre.
+  // Le niveau change : on repart d'une table d'étiquettes propre
   useEffect(() => {
     chips.current.clear();
-  }, [selected, markers.length]);
+    hideTooltip();
+  }, [current, markers.length, hideTooltip]);
 
   return (
     <div ref={wrapperRef} className="absolute inset-0 cursor-grab active:cursor-grabbing">
@@ -460,34 +423,51 @@ export default function GlobeView({
           polygonsData={features}
           polygonAltitude={(f) => {
             const feature = f as CountryFeature;
-            if (feature.__coordination.id === selected?.id) return 0.004;
+            if (!ownerOf.has(feature.__place.id)) return 0.004;
             return f === hovered ? 0.03 : 0.012;
           }}
           polygonCapColor={(f) => {
             const feature = f as CountryFeature;
-            // Coordination ouverte : couleur retirée pour laisser voir le fond
-            if (feature.__coordination.id === selected?.id) return "rgba(0, 0, 0, 0)";
-            return hexToRgba(
-              colorOf(feature.__coordination.people),
-              f === hovered ? 0.75 : 0.5
-            );
+            const owner = ownerOf.get(feature.__place.id);
+            // Pas de repère à ce niveau : couleur retirée pour voir le terrain
+            if (!owner) return "rgba(0, 0, 0, 0)";
+            return hexToRgba(colorOf(owner.evaluation), f === hovered ? 0.75 : 0.5);
           }}
           polygonSideColor={() => "rgba(255, 255, 255, 0.08)"}
-          polygonStrokeColor={(f) => colorOf((f as CountryFeature).__coordination.people)}
-          polygonLabel={labelHtml}
+          polygonStrokeColor={(f) => {
+            const feature = f as CountryFeature;
+            const owner = ownerOf.get(feature.__place.id);
+            return colorOf((owner ?? feature.__place).evaluation);
+          }}
           polygonsTransitionDuration={300}
-          onPolygonHover={(f) => setHovered((f as CountryFeature) ?? null)}
-          onPolygonClick={(f) => onSelect((f as CountryFeature).__coordination)}
+          onPolygonHover={(f) => {
+            // Une seule et même infobulle pour les pays et les repères :
+            // le label interne de three-globe faisait doublon avec elle.
+            const feature = (f as CountryFeature) ?? null;
+            setHovered(feature);
+            if (!feature) return hideTooltip();
+            const owner = ownerOf.get(feature.__place.id);
+            if (!owner) return hideTooltip();
+            const pin = chips.current.get(owner.id)?.pin;
+            if (pin?.isConnected) showTooltip(owner, pin);
+          }}
+          onPolygonClick={(f) => {
+            const feature = f as CountryFeature;
+            const place = ownerOf.get(feature.__place.id);
+            if (!place) return;
+            if (place.children?.length) onOpen(place);
+            else onFocus(place);
+          }}
           htmlElementsData={markers}
-          htmlLat={(d) => (d as MarkerPoint).lat}
-          htmlLng={(d) => (d as MarkerPoint).lng}
+          htmlLat={(d) => (d as Place).lat}
+          htmlLng={(d) => (d as Place).lng}
           htmlAltitude={0.005}
           htmlElement={marker}
           onZoom={(pov) => {
             // setState avec la même valeur : React n'effectue aucun rendu,
             // les marqueurs ne sont donc pas reconstruits pendant la rotation
-            const next = pov.altitude > ABIDJAN_SPLIT_ALTITUDE;
-            setGrouped((prev) => (prev === next ? prev : next));
+            const next = pov.altitude <= AUTO_EXPAND_ALTITUDE;
+            setExpanded((prev) => (prev === next ? prev : next));
             // La caméra a bougé : les étiquettes se réorganisent
             relayoutChips();
           }}
@@ -496,8 +476,9 @@ export default function GlobeView({
             if (!globe) return;
             globe.pointOfView(
               {
-                ...INITIAL_VIEW,
-                altitude: INITIAL_VIEW.altitude * aspectFactor(wrapperRef.current),
+                lat: WORLD.lat,
+                lng: WORLD.lng,
+                altitude: WORLD.altitude * aspectFactor(wrapperRef.current),
               },
               0
             );
@@ -513,7 +494,7 @@ export default function GlobeView({
       {/* Infobulle : au-dessus de tous les marqueurs */}
       <div
         ref={tooltipRef}
-        className="pointer-events-none absolute z-30 max-w-56 rounded-[10px] border bg-[#050f23]/95 px-3 py-2 text-[#e8f4fd] backdrop-blur-sm"
+        className="pointer-events-none absolute z-30 max-w-60 rounded-[10px] border bg-[#050f23]/95 px-3 py-2 text-[#e8f4fd] backdrop-blur-sm"
         style={{ display: "none", borderColor: BRAND.blue }}
       />
     </div>

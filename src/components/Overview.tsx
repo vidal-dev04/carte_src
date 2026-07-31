@@ -3,26 +3,33 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BRAND,
-  COLOR_CODING,
-  COORDINATIONS,
-  Intendance,
+  CONTINENT_PLACES,
+  EVALUATIONS,
+  EVALUATION_ORDER,
+  HAS_UNRATED,
   LISTED_PEOPLE,
-  STATUSES,
+  NOT_RATED,
+  OVERVIEW_VIEWS,
+  PLACES_WITH_ISO,
+  Place,
   TOTAL_MEMBERS,
   UNASSIGNED,
+  WORLD,
+  childrenOf,
   colorOf,
-  intendancesOf,
   mapLabel,
+  pathTo,
+  unitsLabel,
 } from "@/data/network";
 
 type Ring = [number, number][];
 type Feature = {
-  properties: { ADM0_A3: string };
+  properties: { ADM0_A3: string; CONTINENT: string };
   geometry: { type: "Polygon" | "MultiPolygon"; coordinates: unknown };
 };
 
 type OverviewProps = {
-  initialCoordinationId: string | null;
+  initialPlaceId: string;
   onClose: () => void;
 };
 
@@ -93,6 +100,8 @@ type PinItem = {
   y: number;
   label: string;
   people: number;
+  /** « 6 pays » : remplace l'effectif pour les lieux à sous-unités */
+  units: string | null;
   color: string;
   size: number;
 };
@@ -124,7 +133,8 @@ function layoutPins(items: PinItem[], bounds: Map): PlacedPin[] {
   return [...items]
     .sort((a, b) => a.y - b.y)
     .map((item) => {
-      const chipW = textWidth(`${item.label} · ${item.people}`, 13.5, true) + 22;
+      const chipW =
+        textWidth(`${item.label} · ${item.units ?? item.people}`, 13.5, true) + 22;
       const side = chipW / 2 + 16;
       const candidates: [number, number][] = [
         [0, 6],
@@ -179,7 +189,7 @@ function layoutPins(items: PinItem[], bounds: Map): PlacedPin[] {
 }
 
 function Pin({ pin }: { pin: PlacedPin }) {
-  const { x, y, size, color, label, people, chipX, chipY, chipW, moved } = pin;
+  const { x, y, size, color, label, people, units, chipX, chipY, chipW, moved } = pin;
   return (
     <g>
       {moved && (
@@ -213,14 +223,18 @@ function Pin({ pin }: { pin: PlacedPin }) {
         strokeWidth="1.4"
       />
       <text x={chipX + 11} y={chipY + 16.5} fontSize="13.5" fontWeight="700" fill="#ffffff">
-        {label} · <tspan fill={BRAND.lightBlue}>{people}</tspan>
+        {label} ·{" "}
+        <tspan fill={units ? BRAND.gold : BRAND.lightBlue}>{units ?? people}</tspan>
       </text>
     </g>
   );
 }
 
-export default function Overview({ initialCoordinationId, onClose }: OverviewProps) {
-  const [view, setView] = useState<string>(initialCoordinationId ?? "world");
+export default function Overview({ initialPlaceId, onClose }: OverviewProps) {
+  // Le lieu courant a sa propre affiche ? On l'ouvre directement, sinon le monde
+  const [view, setView] = useState<string>(
+    OVERVIEW_VIEWS.some((v) => v.id === initialPlaceId) ? initialPlaceId : "world"
+  );
   const [features, setFeatures] = useState<Feature[]>([]);
   const [logoDataUrl, setLogoDataUrl] = useState<string>("");
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -259,30 +273,36 @@ export default function Overview({ initialCoordinationId, onClose }: OverviewPro
     return () => window.removeEventListener("resize", apply);
   }, []);
 
-  const coordination = COORDINATIONS.find((c) => c.id === view) ?? null;
+  const place = OVERVIEW_VIEWS.find((v) => v.id === view) ?? WORLD;
+  const isWorld = place.id === WORLD.id;
 
-  /** Entrées affichées sur la carte et dans le classement */
-  const entries = useMemo<Intendance[]>(() => {
-    if (coordination) {
-      // Communes d'Abidjan regroupées : à cette échelle elles se superposeraient
-      return coordination.intendances.length
-        ? intendancesOf(coordination, { grouped: true })
-        : [
-            {
-              name: coordination.name,
-              people: coordination.people,
-              lat: coordination.lat,
-              lng: coordination.lng,
-            },
-          ];
+  /** Entrées affichées sur la carte et dans le classement.
+   *  Abidjan reste groupée : à cette échelle ses communes se superposeraient. */
+  const entries = useMemo<Place[]>(() => {
+    const children = childrenOf(place, { expanded: false });
+    return children.length ? children : [place];
+  }, [place]);
+
+  /**
+   * Chaque pays tracé prend la couleur de l'entrée qui le représente dans
+   * la vue courante : sur la carte du monde, toute l'Afrique porte la
+   * couleur de la coordination « Afrique ». Un pays sans représentant
+   * reste éteint.
+   */
+  const ownerOf = useMemo(() => {
+    const map = new Map<string, Place>();
+    for (const p of [...PLACES_WITH_ISO, ...CONTINENT_PLACES]) {
+      const trail = pathTo(p.id);
+      const owner =
+        entries.find((e) => trail.some((t) => t.id === e.id)) ??
+        // Le pays affiché lui-même garde sa couleur (Côte d'Ivoire en rouge
+        // dans sa propre vue). Le continent, lui, ne se colore qu'au niveau
+        // monde : dans la vue Afrique, seuls les pays membres ressortent.
+        (p.iso && p.id === place.id ? place : undefined);
+      if (owner) map.set(p.id, owner);
     }
-    return COORDINATIONS.map((c) => ({
-      name: c.name,
-      people: c.people,
-      lat: c.lat,
-      lng: c.lng,
-    }));
-  }, [coordination]);
+    return map;
+  }, [entries, place]);
 
   /**
    * Une coordination sans découpage n'a rien à classer : son effectif est
@@ -311,9 +331,9 @@ export default function Overview({ initialCoordinationId, onClose }: OverviewPro
   const proj = useMemo(() => {
     const map = mapArea;
     const pts = entries.map((e) => [e.lng, e.lat] as [number, number]);
-    if (coordination) {
-      // Une coordination sans découpage : on cadre autour de son centre
-      const spread = coordination.intendances.length ? 3.5 : coordination.altitude * 20;
+    if (!isWorld) {
+      // Un lieu sans découpage : on cadre autour de son centre
+      const spread = place.children?.length ? 3.5 : place.altitude * 20;
       return makeProjection(
         pts,
         { l: spread, r: spread, t: spread * 0.7, b: spread * 0.85 },
@@ -322,18 +342,24 @@ export default function Overview({ initialCoordinationId, onClose }: OverviewPro
     }
     const pad = portrait ? { l: 6, r: 6, t: 26, b: 9 } : { l: 16, r: 16, t: 26, b: 9 };
     return makeProjection(pts, pad, map);
-  }, [entries, coordination, mapArea, portrait]);
+  }, [entries, isWorld, place, mapArea, portrait]);
 
   const pins = useMemo(() => {
     const items: PinItem[] = entries.map((e) => {
       const [x, y] = proj(e.lng, e.lat);
       return {
-        key: e.name,
+        key: e.id,
         x,
         y,
         label: mapLabel(e),
         people: e.people,
-        color: colorOf(e.people),
+        // Seule l'Afrique (continent) affiche « 6 pays » : les pays et les
+        // villes (Abidjan) montrent leur effectif
+        units:
+          e.continent && e.children?.length
+            ? unitsLabel(e, e.children.length)
+            : null,
+        color: colorOf(e.evaluation),
         // Taille fixe : des repères proportionnels masquaient les pays
         size: portrait ? 26 : 30,
       };
@@ -351,21 +377,22 @@ export default function Overview({ initialCoordinationId, onClose }: OverviewPro
     year: "numeric",
   }).format(new Date());
 
-  const title = coordination ? coordination.name : "Répartition des membres";
-  const subtitle = coordination
-    ? `${coordination.intendances.length ? `${coordination.intendances.length} intendances` : "Coordination"} · ${dateLabel}`
-    : `Coordinations dans le monde · ${dateLabel}`;
+  const title = isWorld ? "Répartition des membres" : place.name;
+  const subtitle = isWorld
+    ? `Coordinations dans le monde · ${dateLabel}`
+    : `${place.children?.length ? unitsLabel(place, entries.length) : "Coordination"} · ${dateLabel}`;
 
-  const totalLabel = coordination ? coordination.name : "Total des membres";
-  const totalValue = String(coordination ? coordination.people : TOTAL_MEMBERS);
+  const totalLabel = isWorld ? "Total des membres" : place.name;
+  const totalValue = String(isWorld ? TOTAL_MEMBERS : place.people);
   const totalBoxW =
     textWidth(`${totalLabel} : `, 17) +
     textWidth(totalValue, 24, true) +
     textWidth(" membres", 17) +
     48;
 
-  /** Emplacement de la légende des couleurs (si elle est réactivée) */
-  const legendY = mapArea.y + mapArea.h - 192;
+  /** Légende des évaluations, en bas à gauche de la zone carte */
+  const legendRows = EVALUATION_ORDER.length + (HAS_UNRATED ? 1 : 0);
+  const legendY = mapArea.y + mapArea.h - (legendRows * 26 + 44) - 20;
 
   const downloadPng = () => {
     const svg = svgRef.current;
@@ -392,12 +419,11 @@ export default function Overview({ initialCoordinationId, onClose }: OverviewPro
     img.src = url;
   };
 
-  // Seules les coordinations dont le territoire se trace ont leur propre vue.
-  // « Afrique » couvre plusieurs pays : elle reste sur la carte du monde.
-  const tabs = [
-    { id: "world", label: "🌍 Monde" },
-    ...COORDINATIONS.filter((c) => c.iso).map((c) => ({ id: c.id, label: c.name })),
-  ];
+  // Une vue par niveau intéressant : Monde, Afrique, Côte d'Ivoire, France…
+  const tabs = OVERVIEW_VIEWS.map((v) => ({
+    id: v.id,
+    label: v.id === WORLD.id ? "🌍 Monde" : v.name,
+  }));
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-[#02060f]/95 backdrop-blur-sm">
@@ -459,18 +485,20 @@ export default function Overview({ initialCoordinationId, onClose }: OverviewPro
 
           {/* Pays (fond de carte) */}
           {features.map((f, i) => {
-            const c = COORDINATIONS.find((cc) => cc.iso === f.properties.ADM0_A3);
-            const isCurrent = c && c.id === coordination?.id;
+            const c =
+              PLACES_WITH_ISO.find((pp) => pp.iso === f.properties.ADM0_A3) ??
+              CONTINENT_PLACES.find((pp) => pp.continent === f.properties.CONTINENT);
+            const owner = c ? ownerOf.get(c.id) : null;
             return (
               <path
                 key={i}
                 d={pathOf(ringsOf(f.geometry), proj)}
                 fill={
-                  c
-                    ? isCurrent || !coordination
-                      ? `${colorOf(c.people)}${isCurrent ? "cc" : "b3"}`
-                      : "#16233d"
-                    : "#0d1830"
+                  owner
+                    ? `${colorOf(owner.evaluation)}${isWorld ? "b3" : "cc"}`
+                    : c
+                      ? "#16233d"
+                      : "#0d1830"
                 }
                 stroke={c ? "rgba(255,255,255,0.55)" : "#1d2c49"}
                 strokeWidth={c ? 1.2 : 0.7}
@@ -548,7 +576,7 @@ export default function Overview({ initialCoordinationId, onClose }: OverviewPro
                 fill="#9fc9e8"
                 letterSpacing="2"
               >
-                {coordination ? "INTENDANCES" : "COORDINATIONS"}
+                {(place.unitLabel?.many ?? "sous-unités").toUpperCase()}
               </text>
               {ranking.map((entry, i) => {
                 // En portrait la liste passe sur deux colonnes si elle est longue
@@ -559,12 +587,13 @@ export default function Overview({ initialCoordinationId, onClose }: OverviewPro
                 const x = rank.x + col * colW;
                 const y = rank.y + 48 + row * 21;
                 return (
-                  <g key={entry.name}>
+                  <g key={entry.id}>
                     <text x={x + 16} y={y} fontSize="11" fill="rgba(255,255,255,0.4)">
                       {i + 1}.
                     </text>
-                    <text x={x + 36} y={y} fontSize="12.5" fill="#ffffff">
-                      {entry.name}
+                    <circle cx={x + 40} cy={y - 4} r={4} fill={colorOf(entry.evaluation)} />
+                    <text x={x + 52} y={y} fontSize="12.5" fill="#ffffff">
+                      {mapLabel(entry)}
                     </text>
                     <text
                       x={x + colW - 16}
@@ -582,59 +611,50 @@ export default function Overview({ initialCoordinationId, onClose }: OverviewPro
             </>
           )}
 
-          {/* Légende : tailles (ou couleurs si le code couleur est réactivé) */}
-          {COLOR_CODING ? (
-            <>
-              <rect
-                x={20}
-                y={legendY}
-                width={302}
-                height={172}
-                rx={14}
-                fill="rgba(4,10,24,0.88)"
-                stroke="rgba(255,255,255,0.18)"
-              />
-              <text
-                x={38}
-                y={legendY + 27}
-                fontSize="12.5"
-                fontWeight="700"
-                fill="#9fc9e8"
-                letterSpacing="2"
-              >
-                LÉGENDE
-              </text>
-              {STATUSES.map(({ min, status }, i) => {
-                const prev = STATUSES[i - 1];
-                const range = prev
-                  ? min === 0
-                    ? `moins de ${prev.min}`
-                    : `${min} à ${prev.min - 1}`
-                  : `${min} et +`;
-                const y = legendY + 52 + i * 26;
-                return (
-                  <g key={status.label}>
-                    <circle cx={44} cy={y - 4} r={5.5} fill={status.color} />
-                    <text x={58} y={y} fontSize="13" fontWeight="600" fill="#ffffff">
-                      {status.label}
-                    </text>
-                    <text
-                      x={308}
-                      y={y}
-                      fontSize="11.5"
-                      fill="rgba(255,255,255,0.55)"
-                      textAnchor="end"
-                    >
-                      {range}
-                    </text>
-                  </g>
-                );
-              })}
-            </>
-          ) : null}
+          {/* Légende des évaluations */}
+          <rect
+            x={20}
+            y={legendY}
+            width={380}
+            height={legendRows * 26 + 44}
+            rx={14}
+            fill="rgba(4,10,24,0.88)"
+            stroke="rgba(255,255,255,0.18)"
+          />
+          <text
+            x={38}
+            y={legendY + 27}
+            fontSize="12.5"
+            fontWeight="700"
+            fill="#9fc9e8"
+            letterSpacing="2"
+          >
+            ÉVALUATION
+          </text>
+          {(
+            [
+              ...EVALUATION_ORDER.map((key) => ({
+                color: EVALUATIONS[key].color,
+                label: EVALUATIONS[key].label,
+              })),
+              ...(HAS_UNRATED
+                ? [{ color: NOT_RATED, label: "Pas encore évaluée" }]
+                : []),
+            ] as { color: string; label: string }[]
+          ).map((row, i) => {
+            const y = legendY + 52 + i * 26;
+            return (
+              <g key={row.label}>
+                <circle cx={44} cy={y - 4} r={5.5} fill={row.color} />
+                <text x={58} y={y} fontSize="13" fontWeight="600" fill="#ffffff">
+                  {row.label}
+                </text>
+              </g>
+            );
+          })}
 
           {/* Rappel de l'écart entre le total et la répartition connue */}
-          {!coordination && UNASSIGNED > 0 && (
+          {isWorld && UNASSIGNED > 0 && (
             <text
               x={20}
               y={mapArea.y + mapArea.h - 18}
